@@ -557,6 +557,9 @@ int main(int argc, char *argv[]) {
     socklen_t client_len = sizeof(client_addr);
     int opt = 1;
 
+    printf("TokenShield ICAP server starting...\n");
+    fflush(stdout);
+
     // Initialize configuration with defaults
     g_config.port = ICAP_PORT;
     strcpy(g_config.mysql_host, "localhost");
@@ -641,9 +644,17 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    printf("TokenShield ICAP server listening on port %d\n", g_config.port);
+    printf("ICAP server listening on 0.0.0.0:%d\n", g_config.port);
+    fflush(stdout);
+    if (g_config.debug) {
+        printf("Debug mode enabled\n");
+        printf("MySQL: %s@%s:%s\n", g_config.mysql_user, g_config.mysql_host, g_config.mysql_db);
+        fflush(stdout);
+    }
 
-    // Main server loop
+    // Accept connections loop
+    printf("Waiting for connections...\n");
+    fflush(stdout);
     while (g_running) {
         client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) {

@@ -49,4 +49,4 @@ if [ "$DEBUG_MODE" = "1" ]; then
 fi
 
 echo "Starting ICAP server with: /app/icap-server $ARGS"
-exec /app/icap-server $ARGS
+exec /app/icap-server $ARGS 2>&1
