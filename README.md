@@ -20,6 +20,17 @@
 ╚═══════════════════════════════════════════════════════════╝
 ```
 
+## ⚠️ **EARLY STAGE PROJECT - NOT PRODUCTION READY** ⚠️
+
+**This project is in early development stage and should NOT be used in production environments.**
+
+- 🚧 **Experimental Implementation**: Core functionality is working but needs extensive testing
+- 🔒 **Security Review Required**: Has not undergone professional security audit
+- 📋 **PCI Compliance**: Implementation requires proper validation for PCI DSS compliance
+- 🧪 **Testing Phase**: Currently suitable for development, testing, and educational purposes only
+
+---
+
 **TokenShield** is a complete PCI compliance solution that acts as a secure gateway between your application and sensitive credit card data. Using HAProxy for intelligent traffic routing and Squid for secure outbound connections, TokenShield ensures your application never touches raw credit card information.
 
 ## Architecture Overview
