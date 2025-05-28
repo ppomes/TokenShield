@@ -1,0 +1,7 @@
+Flask==2.3.3
+flask-mysqldb==2.0.0
+cryptography==41.0.4
+requests==2.31.0
+pyicap==1.0.0
+mysqlclient==2.2.0
+gunicorn==21.2.0

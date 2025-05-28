@@ -1,0 +1,137 @@
+version: '3.8'
+
+services:
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: pci-proxy-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword123
+      MYSQL_DATABASE: pci_proxy
+      MYSQL_USER: pciproxy
+      MYSQL_PASSWORD: pciproxy123
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    ports:
+      - "3306:3306"
+    networks:
+      - pci-proxy-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # Tokenizer Service
+  tokenizer:
+    build: ./tokenizer
+    container_name: pci-proxy-tokenizer
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: pciproxy
+      MYSQL_PASSWORD: pciproxy123
+      MYSQL_DB: pci_proxy
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-your-256-bit-base64-encoded-key-here}
+      APP_ENDPOINT: ${APP_ENDPOINT:-http://dummy-app:8000}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+      - "1344:1344"
+    networks:
+      - pci-proxy-net
+    restart: unless-stopped
+
+  # HAProxy - Incoming traffic interceptor
+  haproxy:
+    image: haproxy:2.8-alpine
+    container_name: pci-proxy-haproxy
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./haproxy/tokenize.lua:/etc/haproxy/tokenize.lua:ro
+      - ./certs:/etc/haproxy/certs:ro
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8404:8404"  # Stats page
+    depends_on:
+      - tokenizer
+    networks:
+      - pci-proxy-net
+    environment:
+      APP_ENDPOINT: ${APP_ENDPOINT:-http://your-app:8000}
+    restart: unless-stopped
+
+  # Squid - Outgoing traffic interceptor
+  squid:
+    build: ./squid
+    container_name: pci-proxy-squid
+    volumes:
+      - ./squid/squid.conf:/etc/squid/squid.conf:ro
+      - ./certs:/etc/squid/certs:ro
+      - squid_cache:/var/spool/squid
+      - squid_logs:/var/log/squid
+    ports:
+      - "3128:3128"
+      - "3129:3129"  # SSL bump port
+    depends_on:
+      - tokenizer
+    networks:
+      - pci-proxy-net
+    restart: unless-stopped
+
+  # Optional: Management API
+  api:
+    build: ./api
+    container_name: pci-proxy-api
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: pciproxy
+      MYSQL_PASSWORD: pciproxy123
+      MYSQL_DB: pci_proxy
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-your-256-bit-base64-encoded-key-here}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "8090:8090"
+    networks:
+      - pci-proxy-net
+    restart: unless-stopped
+
+  # Dummy E-commerce Application
+  dummy-app:
+    build: ./dummy-app
+    container_name: dummy-ecommerce-app
+    environment:
+      PAYMENT_GATEWAY_URL: https://payment-gateway:9000
+      HTTP_PROXY: http://squid:3128
+      HTTPS_PROXY: http://squid:3129
+    ports:
+      - "8000:8000"
+    networks:
+      - pci-proxy-net
+    depends_on:
+      - squid
+      - payment-gateway
+    restart: unless-stopped
+
+  # Dummy Payment Gateway
+  payment-gateway:
+    build: ./dummy-gateway
+    container_name: dummy-payment-gateway
+    ports:
+      - "9000:9000"
+    networks:
+      - pci-proxy-net
+    restart: unless-stopped
+
+networks:
+  pci-proxy-net:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  squid_cache:
+  squid_logs:
