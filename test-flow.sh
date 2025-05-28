@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Test script to demonstrate the PCI-Proxy flow
+# Test script to demonstrate the TokenShield flow
 
 echo "
 ╔═══════════════════════════════════════════════════════════╗

@@ -28,7 +28,7 @@ def validate_card_number(card_number):
     # Remove any spaces or dashes
     clean_number = card_number.replace(' ', '').replace('-', '')
     
-    # Check if it's a token (from PCI-Proxy)
+    # Check if it's a token (from TokenShield)
     if clean_number.startswith('tok_'):
         logger.info(f"Received tokenized card: {clean_number}")
         return False  # This shouldn't happen - tokens should be detokenized by Squid
@@ -65,7 +65,7 @@ def process_payment():
         
         # Validate card number
         if not validate_card_number(card_number):
-            # If we receive a token, it means Squid/PCI-Proxy failed to detokenize
+            # If we receive a token, it means Squid/TokenShield failed to detokenize
             if card_number and card_number.startswith('tok_'):
                 return jsonify({
                     'status': 'error',

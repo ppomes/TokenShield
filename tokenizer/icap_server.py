@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ICAP Server for PCI-Proxy TokenShield
+ICAP Server for TokenShield
 Handles detokenization of credit card tokens in HTTP requests
 """
 
@@ -24,7 +24,7 @@ MYSQL_CONFIG = {
     'host': os.getenv('MYSQL_HOST', 'mysql'),
     'user': os.getenv('MYSQL_USER', 'pciproxy'),
     'passwd': os.getenv('MYSQL_PASSWORD', 'pciproxy123'),
-    'db': os.getenv('MYSQL_DB', 'pci_proxy'),
+    'db': os.getenv('MYSQL_DB', 'tokenshield'),
     'port': 3306
 }
 
@@ -164,8 +164,8 @@ class DetokenizerICAPHandler(BaseICAPRequestHandler):
         
         self.set_icap_response(200)
         self.set_icap_header(b'Methods', b'REQMOD')
-        self.set_icap_header(b'Service', b'PCI-Proxy Detokenizer')
-        self.set_icap_header(b'ISTag', b'PCIProxy-1.0')
+        self.set_icap_header(b'Service', b'TokenShield Detokenizer')
+        self.set_icap_header(b'ISTag', b'TokenShield-1.0')
         self.set_icap_header(b'Preview', b'0')
         self.set_icap_header(b'Transfer-Preview', b'*')
         self.set_icap_header(b'Transfer-Ignore', b'jpg,jpeg,gif,png,swf,flv,pdf,mp3,mp4,zip')

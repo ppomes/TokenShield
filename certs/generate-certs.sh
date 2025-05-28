@@ -6,12 +6,12 @@
 # Generate CA key and certificate
 openssl genrsa -out ca.key 4096
 openssl req -new -x509 -days 365 -key ca.key -out ca.crt \
-    -subj "/C=US/ST=State/L=City/O=PCI-Proxy CA/CN=pci-proxy-ca"
+    -subj "/C=US/ST=State/L=City/O=TokenShield CA/CN=tokenshield-ca"
 
 # Generate server key and certificate request
 openssl genrsa -out server.key 2048
 openssl req -new -key server.key -out server.csr \
-    -subj "/C=US/ST=State/L=City/O=PCI-Proxy/CN=pci-proxy"
+    -subj "/C=US/ST=State/L=City/O=TokenShield/CN=tokenshield"
 
 # Sign server certificate with CA
 openssl x509 -req -days 365 -in server.csr -CA ca.crt -CAkey ca.key \

@@ -13,7 +13,7 @@ app = Flask(__name__)
 app.config['MYSQL_HOST'] = os.getenv('MYSQL_HOST', 'mysql')
 app.config['MYSQL_USER'] = os.getenv('MYSQL_USER', 'pciproxy')
 app.config['MYSQL_PASSWORD'] = os.getenv('MYSQL_PASSWORD', 'pciproxy123')
-app.config['MYSQL_DB'] = os.getenv('MYSQL_DB', 'pci_proxy')
+app.config['MYSQL_DB'] = os.getenv('MYSQL_DB', 'tokenshield')
 
 # Initialize MySQL
 mysql = MySQL(app)

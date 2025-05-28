@@ -1,8 +1,8 @@
--- PCI-Proxy Database Schema
+-- TokenShield Database Schema
 -- For storing tokenized credit card information
 
-CREATE DATABASE IF NOT EXISTS pci_proxy;
-USE pci_proxy;
+CREATE DATABASE IF NOT EXISTS tokenshield;
+USE tokenshield;
 
 -- Table for storing tokenized credit cards
 CREATE TABLE IF NOT EXISTS credit_cards (

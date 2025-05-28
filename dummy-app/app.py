@@ -199,7 +199,7 @@ def index():
 def checkout():
     """
     Process checkout - receives credit card data
-    In the real world, this endpoint would receive tokenized data from PCI-Proxy
+    In the real world, this endpoint would receive tokenized data from TokenShield
     """
     try:
         data = request.get_json()

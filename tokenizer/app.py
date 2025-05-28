@@ -19,7 +19,7 @@ MYSQL_CONFIG = {
     'host': os.getenv('MYSQL_HOST', 'mysql'),
     'user': os.getenv('MYSQL_USER', 'pciproxy'),
     'passwd': os.getenv('MYSQL_PASSWORD', 'pciproxy123'),
-    'db': os.getenv('MYSQL_DB', 'pci_proxy'),
+    'db': os.getenv('MYSQL_DB', 'tokenshield'),
     'port': 3306
 }
 

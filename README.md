@@ -185,7 +185,7 @@ docker-compose restart
 docker-compose ps mysql
 
 # Connect to MySQL
-docker exec -it pci-proxy-mysql mysql -u pciproxy -ppciproxy123 pci_proxy
+docker exec -it tokenshield-mysql mysql -u pciproxy -ppciproxy123 tokenshield
 ```
 
 ### Certificate issues
