@@ -12,7 +12,8 @@ if [ ! -f .env ]; then
     cp .env.example .env
     
     # Generate encryption key
-    ENCRYPTION_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+    # Try with python3, fallback to a static key if cryptography is not installed
+    ENCRYPTION_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || echo "zN0Lh6WCqsFg6p77l8k_TL-tZCLbRxqJufRpL2sKVxo=")
     
     # Update .env with the key
     if [[ "$OSTYPE" == "darwin"* ]]; then

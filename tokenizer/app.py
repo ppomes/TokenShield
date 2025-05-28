@@ -7,21 +7,25 @@ import secrets
 import logging
 from datetime import datetime
 from flask import Flask, request, jsonify, Response
-from flask_mysqldb import MySQL
+import MySQLdb
 from cryptography.fernet import Fernet
 import requests
 from pyicap import ICAPServer, BaseICAPRequestHandler
 
 app = Flask(__name__)
 
-# Configuration
-app.config['MYSQL_HOST'] = os.getenv('MYSQL_HOST', 'mysql')
-app.config['MYSQL_USER'] = os.getenv('MYSQL_USER', 'pciproxy')
-app.config['MYSQL_PASSWORD'] = os.getenv('MYSQL_PASSWORD', 'pciproxy123')
-app.config['MYSQL_DB'] = os.getenv('MYSQL_DB', 'pci_proxy')
+# MySQL configuration
+MYSQL_CONFIG = {
+    'host': os.getenv('MYSQL_HOST', 'mysql'),
+    'user': os.getenv('MYSQL_USER', 'pciproxy'),
+    'passwd': os.getenv('MYSQL_PASSWORD', 'pciproxy123'),
+    'db': os.getenv('MYSQL_DB', 'pci_proxy'),
+    'port': 3306
+}
 
-# Initialize MySQL
-mysql = MySQL(app)
+def get_db_connection():
+    """Get a new database connection"""
+    return MySQLdb.connect(**MYSQL_CONFIG)
 
 # Encryption key - in production, use proper key management
 ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY', Fernet.generate_key())
@@ -106,6 +110,7 @@ def generate_token():
 
 def store_card(card_number, token):
     """Store encrypted card in database"""
+    conn = None
     try:
         encrypted_card = cipher_suite.encrypt(card_number.encode())
         last_four = card_number[-4:]
@@ -116,7 +121,8 @@ def store_card(card_number, token):
         expiry_month = 12  # Default values
         expiry_year = 2025
         
-        cur = mysql.connection.cursor()
+        conn = get_db_connection()
+        cur = conn.cursor()
         cur.execute("""
             INSERT INTO credit_cards 
             (token, card_number_encrypted, last_four_digits, first_six_digits, 
@@ -124,18 +130,23 @@ def store_card(card_number, token):
             VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP
         """, (token, encrypted_card, last_four, first_six, card_type, expiry_month, expiry_year))
-        mysql.connection.commit()
+        conn.commit()
         cur.close()
         
         logger.info(f"Stored card ending in {last_four} with token {token}")
     except Exception as e:
         logger.error(f"Error storing card: {e}")
         raise
+    finally:
+        if conn:
+            conn.close()
 
 def retrieve_card(token):
     """Retrieve and decrypt card from database"""
+    conn = None
     try:
-        cur = mysql.connection.cursor()
+        conn = get_db_connection()
+        cur = conn.cursor()
         cur.execute("""
             SELECT card_number_encrypted FROM credit_cards 
             WHERE token = %s AND is_active = TRUE
@@ -151,14 +162,75 @@ def retrieve_card(token):
     except Exception as e:
         logger.error(f"Error retrieving card: {e}")
         return None
+    finally:
+        if conn:
+            conn.close()
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
     return jsonify({'status': 'healthy'}), 200
 
-@app.route('/tokenize', methods=['POST'])
-def tokenize_request():
+@app.route('/proxy', methods=['POST'])
+def proxy_request():
+    """
+    Forward proxy endpoint that detokenizes requests before sending to payment gateway
+    This replaces the Squid/ICAP functionality for now
+    """
+    try:
+        # Get the target URL from headers
+        target_url = request.headers.get('X-Target-URL')
+        if not target_url:
+            return jsonify({'error': 'Missing X-Target-URL header'}), 400
+        
+        # Get request data
+        data = request.get_json()
+        logger.info(f"Proxy request to {target_url} with data: {json.dumps(data, indent=2)}")
+        
+        # Check if we have a token in the card_number field
+        if data and isinstance(data, dict) and 'card_number' in data:
+            card_number = data['card_number']
+            if isinstance(card_number, str) and card_number.startswith('tok_'):
+                # Retrieve the real card number
+                real_card = retrieve_card(card_number)
+                if real_card:
+                    logger.info(f"Detokenized {card_number} to card ending in {real_card[-4:]}")
+                    data['card_number'] = real_card
+                else:
+                    logger.error(f"Failed to detokenize {card_number}")
+                    return jsonify({'error': 'Invalid token'}), 400
+        
+        # Forward the request with real card data
+        headers = dict(request.headers)
+        headers.pop('Host', None)
+        headers.pop('Content-Length', None)
+        headers.pop('X-Target-URL', None)
+        
+        response = requests.post(
+            target_url,
+            json=data,
+            headers=headers,
+            allow_redirects=False
+        )
+        
+        # Log the detokenization
+        if 'card_number' in data and isinstance(data.get('card_number'), str) and data['card_number'].startswith('tok_'):
+            log_request(data['card_number'], 'detokenize', request.remote_addr, target_url, response.status_code)
+        
+        # Return the response
+        return Response(
+            response.content,
+            status=response.status_code,
+            headers=dict(response.headers)
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in proxy request: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/', defaults={'path': ''}, methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+@app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+def tokenize_request(path):
     """Tokenize credit card data in request and forward to destination"""
     try:
         # Get original destination from headers
@@ -179,10 +251,8 @@ def tokenize_request():
         headers.pop('Host', None)
         headers.pop('Content-Length', None)
         
-        if original_dest:
-            forward_url = f"{app_endpoint}{original_dest.split('/', 1)[1] if '/' in original_dest else ''}"
-        else:
-            forward_url = f"{app_endpoint}{request.path}"
+        # Build the forward URL
+        forward_url = f"{app_endpoint}/{path}" if path else app_endpoint
         
         # Make request to application
         if request.is_json:
@@ -219,74 +289,60 @@ def tokenize_request():
 
 def log_request(token, request_type, source_ip, destination_url, response_status):
     """Log token request to database"""
+    conn = None
     try:
-        cur = mysql.connection.cursor()
+        conn = get_db_connection()
+        cur = conn.cursor()
         cur.execute("""
             INSERT INTO token_requests 
             (token, request_type, source_ip, destination_url, response_status)
             VALUES (%s, %s, %s, %s, %s)
         """, (token, request_type, source_ip, destination_url, response_status))
-        mysql.connection.commit()
+        conn.commit()
         cur.close()
     except Exception as e:
         logger.error(f"Error logging request: {e}")
+    finally:
+        if conn:
+            conn.close()
 
-# ICAP Server for Squid integration
-class TokenizerICAPHandler(BaseICAPRequestHandler):
-    def request_OPTIONS(self):
-        self.set_icap_response(200)
-        self.set_icap_header('Methods', 'REQMOD RESPMOD')
-        self.set_icap_header('Service', 'PCI-Proxy Tokenizer')
-        self.set_icap_header('Preview', '0')
-        self.set_icap_header('Transfer-Complete', '*')
-        self.send_headers()
-        
-    def request_REQMOD(self):
-        """Handle request modification (detokenization for outbound)"""
-        try:
-            # Get request body
-            if self.has_body:
-                body = self.get_body()
-                
-                # Find tokens and replace with real card numbers
-                token_pattern = r'tok_[A-Za-z0-9_-]{43}'
-                
-                def replace_token(match):
-                    token = match.group(0)
-                    card_number = retrieve_card(token)
-                    if card_number:
-                        log_request(token, 'detokenize', self.client_address[0], 
-                                  self.enc_req[1], 200)
-                        return card_number
-                    return token
-                
-                # Replace tokens with card numbers
-                modified_body = re.sub(token_pattern, replace_token, body)
-                
-                # Send modified request
-                self.set_icap_response(200)
-                self.set_enc_request(' '.join(self.enc_req))
-                for header in self.enc_headers:
-                    self.set_enc_header(header[0], header[1])
-                self.send_headers(has_body=True)
-                self.write_chunk(modified_body)
-                self.write_chunk('')
-            else:
-                # No body, return 204
-                self.set_icap_response(204)
-                self.send_headers()
-                
-        except Exception as e:
-            logger.error(f"Error in REQMOD: {e}")
-            self.send_error(500)
 
 if __name__ == '__main__':
-    # Run Flask app in one thread
     import threading
-    flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8080))
-    flask_thread.daemon = True
-    flask_thread.start()
+    from icap_server import ICAPServer, DetokenizerICAPHandler
     
-    # Run ICAP server
-    server = ICAPServer(('0.0.0.0', 1344), TokenizerICAPHandler)
-    server.serve_forever()
+    # ICAP server configuration
+    icap_port = int(os.getenv('ICAP_PORT', 1344))
+    icap_address = os.getenv('ICAP_ADDRESS', '')
+    
+    # Create ICAP server instance
+    icap_server = ICAPServer((icap_address, icap_port), DetokenizerICAPHandler)
+    
+    # Run ICAP server in a separate thread
+    def run_icap_server():
+        logger.info(f"Starting ICAP server on {icap_address or '*'}:{icap_port}")
+        try:
+            icap_server.serve_forever()
+        except Exception as e:
+            logger.error(f"ICAP server error: {e}")
+    
+    icap_thread = threading.Thread(target=run_icap_server, daemon=True)
+    icap_thread.start()
+    
+    # Test database connection
+    try:
+        conn = get_db_connection()
+        conn.close()
+        logger.info("Database connection successful")
+    except Exception as e:
+        logger.error(f"Failed to connect to database: {e}")
+        logger.warning("Server will start but database operations will fail")
+    
+    try:
+        # Run Flask app in main thread
+        logger.info("Starting Flask server on 0.0.0.0:8080")
+        app.run(host='0.0.0.0', port=8080, debug=False)  # Disable debug to prevent reloader issues
+    finally:
+        # Cleanup ICAP server on exit
+        logger.info("Shutting down servers...")
+        icap_server.shutdown()

@@ -2,7 +2,6 @@ FROM ubuntu:22.04
 
 # Install Squid and dependencies
 RUN apt-get update && apt-get install -y \
-    squid \
     squid-openssl \
     openssl \
     ca-certificates \
@@ -11,11 +10,12 @@ RUN apt-get update && apt-get install -y \
 # Create necessary directories
 RUN mkdir -p /var/spool/squid /var/log/squid /etc/squid/certs
 
-# Generate self-signed certificate for SSL bump
-RUN openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-    -keyout /etc/squid/certs/squid.pem \
-    -out /etc/squid/certs/squid.pem \
-    -subj "/C=US/ST=State/L=City/O=Organization/CN=pci-proxy"
+# Generate CA certificate for SSL bump
+RUN openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
+    -subj "/C=US/ST=State/L=City/O=TokenShield/CN=TokenShield CA" \
+    -keyout /etc/squid/certs/squid-ca-key.pem \
+    -out /etc/squid/certs/squid-ca-cert.pem && \
+    cat /etc/squid/certs/squid-ca-cert.pem /etc/squid/certs/squid-ca-key.pem > /etc/squid/certs/squid-ca-cert-key.pem
 
 # Initialize cache directory
 RUN squid -N -z

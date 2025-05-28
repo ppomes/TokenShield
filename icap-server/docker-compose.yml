@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  icap-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tokenshield/icap-server:latest
+    container_name: tokenshield-icap
+    ports:
+      - "1344:1344"
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=tokenshield
+      - MYSQL_PASSWORD=your_secure_password
+      - MYSQL_DATABASE=tokenshield
+      - MYSQL_PORT=3306
+      - ICAP_PORT=1344
+      - DEBUG_MODE=0
+    depends_on:
+      - mysql
+    restart: unless-stopped
+    networks:
+      - tokenshield-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mysql:
+    image: mysql:8.0
+    container_name: tokenshield-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=root_password
+      - MYSQL_DATABASE=tokenshield
+      - MYSQL_USER=tokenshield
+      - MYSQL_PASSWORD=your_secure_password
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "3306:3306"
+    networks:
+      - tokenshield-network
+    restart: unless-stopped
+
+  squid:
+    image: ubuntu/squid:latest
+    container_name: tokenshield-squid
+    ports:
+      - "3128:3128"
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf
+    depends_on:
+      - icap-server
+    networks:
+      - tokenshield-network
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
+
+networks:
+  tokenshield-network:
+    driver: bridge

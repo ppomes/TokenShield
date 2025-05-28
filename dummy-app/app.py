@@ -16,9 +16,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Payment gateway URL (goes through Squid proxy)
-PAYMENT_GATEWAY_URL = os.getenv('PAYMENT_GATEWAY_URL', 'https://payment-gateway:9000')
+PAYMENT_GATEWAY_URL = os.getenv('PAYMENT_GATEWAY_URL', 'http://payment-gateway:5000')
 HTTP_PROXY = os.getenv('HTTP_PROXY', 'http://squid:3128')
-HTTPS_PROXY = os.getenv('HTTPS_PROXY', 'http://squid:3129')
+HTTPS_PROXY = os.getenv('HTTPS_PROXY', 'http://squid:3128')
 
 # Configure proxy
 proxies = {
@@ -228,18 +228,26 @@ def checkout():
             'description': 'Test payment from dummy app'
         }
         
-        # Send to payment gateway (through Squid proxy)
+        # Send to payment gateway (through Squid proxy with C ICAP for detokenization)
         logger.info(f"Sending payment request to gateway: {PAYMENT_GATEWAY_URL}/process")
         
-        # For HTTPS with self-signed certs
+        # Use Squid proxy for transparent detokenization via C ICAP server
         response = requests.post(
             f"{PAYMENT_GATEWAY_URL}/process",
             json=payment_request,
-            proxies=proxies,
-            verify=False  # Only for testing with self-signed certs
+            proxies=proxies  # Use Squid proxy with ICAP
         )
         
-        gateway_response = response.json()
+        logger.info(f"Gateway response status: {response.status_code}")
+        logger.info(f"Gateway response headers: {dict(response.headers)}")
+        logger.info(f"Gateway response text: {response.text[:500]}")
+        
+        try:
+            gateway_response = response.json()
+        except Exception as json_error:
+            logger.error(f"Failed to parse JSON response: {json_error}")
+            logger.error(f"Raw response: {response.text}")
+            raise
         logger.info(f"Gateway response: {json.dumps(gateway_response, indent=2)}")
         
         return jsonify({

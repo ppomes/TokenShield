@@ -162,24 +162,6 @@ def generate_auth_code():
     return f"AUTH-{uuid.uuid4().hex[:8].upper()}"
 
 if __name__ == '__main__':
-    # Generate self-signed certificate for HTTPS
-    import ssl
-    
-    # Create certificate if it doesn't exist
-    cert_path = '/app/certs'
-    os.makedirs(cert_path, exist_ok=True)
-    
-    cert_file = f'{cert_path}/gateway.crt'
-    key_file = f'{cert_path}/gateway.key'
-    
-    if not os.path.exists(cert_file):
-        os.system(f'''
-            openssl req -x509 -newkey rsa:4096 -nodes -out {cert_file} -keyout {key_file} -days 365 \
-            -subj "/C=US/ST=State/L=City/O=Dummy Gateway/CN=payment-gateway"
-        ''')
-    
-    # Run with HTTPS
-    context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
-    context.load_cert_chain(cert_file, key_file)
-    
-    app.run(host='0.0.0.0', port=9000, debug=True, ssl_context=context)
+    # Run with HTTP for simplicity in this demo
+    # In production, payment gateways would use HTTPS
+    app.run(host='0.0.0.0', port=9000, debug=True)

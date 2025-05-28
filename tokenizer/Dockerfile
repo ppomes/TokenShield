@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app.py .
+COPY icap_server.py .
 
 # Create non-root user
 RUN useradd -m -s /bin/bash tokenizer && chown -R tokenizer:tokenizer /app
