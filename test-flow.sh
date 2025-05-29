@@ -18,6 +18,11 @@ NC='\033[0m' # No Color
 echo "Waiting for services to be ready..."
 sleep 5
 
+# Setup: Ensure test API key exists in database
+echo "Setting up test API key..."
+docker exec tokenshield-mysql mysql -u root -prootpassword123 tokenshield -e \
+  "INSERT IGNORE INTO api_keys (api_key, api_secret_hash, client_name, is_active) VALUES ('pk_test_1234567890', 'dummy_hash', 'Test Client', TRUE);" 2>/dev/null || true
+
 # Test 1: Direct request to dummy app (should get tokenized)
 echo -e "${YELLOW}Test 1: Sending credit card through TokenShield${NC}"
 echo "Sending: Card Number: 4532015112830366"
@@ -37,9 +42,9 @@ echo
 echo -e "${GREEN}✓ The dummy app received a tokenized card (check logs)${NC}"
 echo
 
-# Test 2: Check tokenizer health
-echo -e "${YELLOW}Test 2: Checking tokenizer health${NC}"
-curl -s http://localhost:8080/health | jq .
+# Test 2: Check unified tokenizer health (API endpoint)
+echo -e "${YELLOW}Test 2: Checking unified tokenizer health${NC}"
+curl -s http://localhost:8090/health | jq .
 echo
 
 # Test 3: Check payment gateway
@@ -52,15 +57,12 @@ echo -e "${YELLOW}Test 4: HAProxy Statistics${NC}"
 echo "View HAProxy stats at: http://localhost:8404/stats"
 echo
 
-# Test 5: Create API key for management
-echo -e "${YELLOW}Test 5: Creating API key for management${NC}"
-API_RESPONSE=$(curl -s -X POST http://localhost:8090/api/v1/api-keys \
-  -H "Content-Type: application/json" \
-  -H "X-Admin-Secret: change-this-admin-secret" \
-  -d '{"client_name": "Test Client"}')
-
-echo "$API_RESPONSE" | jq .
-API_KEY=$(echo "$API_RESPONSE" | jq -r .api_key)
+# Test 5: Using a pre-created API key (or create one manually)
+echo -e "${YELLOW}Test 5: Using API key for management${NC}"
+# Note: The unified tokenizer doesn't have the create API key endpoint yet
+# You can manually insert an API key in the database or use this test key
+API_KEY="pk_test_1234567890"
+echo "Using test API key: $API_KEY"
 echo
 
 # Test 6: Get statistics
@@ -71,9 +73,15 @@ echo
 
 # View logs
 echo -e "${YELLOW}View real-time logs:${NC}"
-echo "docker-compose logs -f tokenizer     # See tokenization in action"
-echo "docker-compose logs -f dummy-app     # See what the app receives"
-echo "docker-compose logs -f payment-gateway # See final payment processing"
+echo "docker-compose logs -f unified-tokenizer  # See tokenization/detokenization in action"
+echo "docker-compose logs -f dummy-app          # See what the app receives"
+echo "docker-compose logs -f payment-gateway    # See final payment processing"
+echo
+
+# Test 7: List tokens
+echo -e "${YELLOW}Test 7: Listing tokens via API${NC}"
+curl -s http://localhost:8090/api/v1/tokens \
+  -H "X-API-Key: $API_KEY" | jq '.tokens | length as $count | "Found \($count) tokens"'
 echo
 
 echo -e "${GREEN}Test complete! Visit http://localhost to try the web interface.${NC}"
