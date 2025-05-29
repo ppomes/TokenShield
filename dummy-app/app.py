@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
 Dummy E-commerce Application
-This simulates a real application that needs to process credit card payments
+This simulates a real application that needs to process credit card payments.
+
+This is just a test application - in production, the real application would
+handle its own authentication (OAuth, sessions, etc). We don't protect this
+API because it's just for demo purposes.
+
+The TokenShield management API (port 8090) is what should be protected.
 """
 import os
 import json
@@ -487,12 +493,6 @@ def list_cards():
     API endpoint for listing saved cards - protected by API key
     This endpoint returns tokens which should be detokenized by the proxy
     """
-    # Check for API key
-    api_key = request.headers.get('X-API-Key')
-    if api_key != 'demo-api-key-12345':  # In production, use secure key management
-        logger.warning(f"Unauthorized API access attempt with key: {api_key}")
-        return jsonify({'error': 'Unauthorized - API key required'}), 401
-    
     try:
         conn = sqlite3.connect('cards.db')
         conn.row_factory = sqlite3.Row
