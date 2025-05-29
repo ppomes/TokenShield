@@ -18,10 +18,9 @@ NC='\033[0m' # No Color
 echo "Waiting for services to be ready..."
 sleep 5
 
-# Setup: Ensure test API key exists in database
-echo "Setting up test API key..."
-docker exec tokenshield-mysql mysql -u root -prootpassword123 tokenshield -e \
-  "INSERT IGNORE INTO api_keys (api_key, api_secret_hash, client_name, is_active) VALUES ('pk_test_1234567890', 'dummy_hash', 'Test Client', TRUE);" 2>/dev/null || true
+# Note: Make sure to create an API key in the database before running tests
+# Example: INSERT INTO api_keys (api_key, api_secret_hash, client_name, is_active) 
+#          VALUES ('pk_test_1234567890', 'dummy_hash', 'Test Client', TRUE);
 
 # Test 1: Direct request to dummy app (should get tokenized)
 echo -e "${YELLOW}Test 1: Sending credit card through TokenShield${NC}"
