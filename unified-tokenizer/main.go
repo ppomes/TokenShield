@@ -31,6 +31,7 @@ type UnifiedTokenizer struct {
     cardRegex       *regexp.Regexp
     httpPort        string
     icapPort        string
+    apiPort         string
     debug           bool
     mu              sync.RWMutex
 }
@@ -43,7 +44,7 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     dbPassword := getEnv("DB_PASSWORD", "pciproxy123")
     dbName := getEnv("DB_NAME", "tokenshield")
     
-    dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", dbUser, dbPassword, dbHost, dbPort, dbName)
+    dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", dbUser, dbPassword, dbHost, dbPort, dbName)
     db, err := sql.Open("mysql", dsn)
     if err != nil {
         return nil, fmt.Errorf("failed to connect to database: %v", err)
@@ -89,6 +90,7 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
         cardRegex:     regexp.MustCompile(`\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|6(?:011|5[0-9]{2})[0-9]{12}|(?:2131|1800|35\d{3})\d{11})\b`),
         httpPort:      getEnv("HTTP_PORT", "8080"),
         icapPort:      getEnv("ICAP_PORT", "1344"),
+        apiPort:       getEnv("API_PORT", "8090"),
         debug:         getEnv("DEBUG_MODE", "0") == "1",
     }, nil
 }
@@ -601,12 +603,253 @@ func (ut *UnifiedTokenizer) retrieveCard(token string) string {
     return string(cardBytes)
 }
 
+// API Handlers
+func (ut *UnifiedTokenizer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+}
+
+func (ut *UnifiedTokenizer) authenticateAPIRequest(r *http.Request) bool {
+    apiKey := r.Header.Get("X-API-Key")
+    if apiKey == "" {
+        return false
+    }
+    
+    var count int
+    err := ut.db.QueryRow(`
+        SELECT COUNT(*) FROM api_keys 
+        WHERE api_key = ? AND is_active = TRUE
+    `, apiKey).Scan(&count)
+    
+    return err == nil && count > 0
+}
+
+func (ut *UnifiedTokenizer) handleAPIListTokens(w http.ResponseWriter, r *http.Request) {
+    if !ut.authenticateAPIRequest(r) {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+        return
+    }
+    
+    rows, err := ut.db.Query(`
+        SELECT token, card_type, last_four_digits, first_six_digits, 
+               created_at, is_active
+        FROM credit_cards
+        ORDER BY created_at DESC
+        LIMIT 100
+    `)
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Internal server error"})
+        return
+    }
+    defer rows.Close()
+    
+    tokens := []map[string]interface{}{}
+    for rows.Next() {
+        var token, cardType, lastFour, firstSix string
+        var createdAt sql.NullTime
+        var isActive bool
+        
+        var cardTypeNull sql.NullString
+        if err := rows.Scan(&token, &cardTypeNull, &lastFour, &firstSix, &createdAt, &isActive); err != nil {
+            log.Printf("Error scanning row: %v", err)
+            continue
+        }
+        
+        if cardTypeNull.Valid {
+            cardType = cardTypeNull.String
+        }
+        
+        tokenData := map[string]interface{}{
+            "token":      token,
+            "card_type":  cardType,
+            "last_four":  lastFour,
+            "first_six":  firstSix,
+            "is_active":  isActive,
+        }
+        
+        if createdAt.Valid {
+            tokenData["created_at"] = createdAt.Time.Format(time.RFC3339)
+        }
+        
+        tokens = append(tokens, tokenData)
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{"tokens": tokens})
+}
+
+func (ut *UnifiedTokenizer) handleAPIGetToken(w http.ResponseWriter, r *http.Request) {
+    if !ut.authenticateAPIRequest(r) {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+        return
+    }
+    
+    // Extract token from URL path
+    token := strings.TrimPrefix(r.URL.Path, "/api/v1/tokens/")
+    if token == "" {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Token required"})
+        return
+    }
+    
+    var cardType, lastFour, firstSix string
+    var createdAt sql.NullTime
+    var isActive bool
+    var cardTypeNull sql.NullString
+    
+    err := ut.db.QueryRow(`
+        SELECT card_type, last_four_digits, first_six_digits, 
+               created_at, is_active
+        FROM credit_cards
+        WHERE token = ?
+    `, token).Scan(&cardTypeNull, &lastFour, &firstSix, &createdAt, &isActive)
+    
+    if err == sql.ErrNoRows {
+        w.WriteHeader(http.StatusNotFound)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Token not found"})
+        return
+    } else if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Internal server error"})
+        return
+    }
+    
+    if cardTypeNull.Valid {
+        cardType = cardTypeNull.String
+    }
+    
+    result := map[string]interface{}{
+        "token":      token,
+        "card_type":  cardType,
+        "last_four":  lastFour,
+        "first_six":  firstSix,
+        "is_active":  isActive,
+    }
+    
+    if createdAt.Valid {
+        result["created_at"] = createdAt.Time.Format(time.RFC3339)
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(result)
+}
+
+func (ut *UnifiedTokenizer) handleAPIRevokeToken(w http.ResponseWriter, r *http.Request) {
+    if !ut.authenticateAPIRequest(r) {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+        return
+    }
+    
+    token := strings.TrimPrefix(r.URL.Path, "/api/v1/tokens/")
+    
+    result, err := ut.db.Exec(`
+        UPDATE credit_cards 
+        SET is_active = FALSE 
+        WHERE token = ?
+    `, token)
+    
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Internal server error"})
+        return
+    }
+    
+    rowsAffected, _ := result.RowsAffected()
+    if rowsAffected == 0 {
+        w.WriteHeader(http.StatusNotFound)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Token not found"})
+        return
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]string{"message": "Token revoked successfully"})
+}
+
+func (ut *UnifiedTokenizer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
+    if !ut.authenticateAPIRequest(r) {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+        return
+    }
+    
+    // Get active token count
+    var activeTokens int
+    ut.db.QueryRow("SELECT COUNT(*) FROM credit_cards WHERE is_active = TRUE").Scan(&activeTokens)
+    
+    // Get request stats
+    rows, err := ut.db.Query(`
+        SELECT request_type, COUNT(*) as count
+        FROM token_requests
+        WHERE request_timestamp >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        GROUP BY request_type
+    `)
+    
+    requestStats := make(map[string]int)
+    if err == nil {
+        defer rows.Close()
+        for rows.Next() {
+            var reqType string
+            var count int
+            if err := rows.Scan(&reqType, &count); err == nil {
+                requestStats[reqType] = count
+            }
+        }
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "active_tokens": activeTokens,
+        "requests_24h":  requestStats,
+    })
+}
+
 func (ut *UnifiedTokenizer) startHTTPServer() {
     http.HandleFunc("/", ut.handleTokenize)
     
     log.Printf("Starting HTTP tokenization server on port %s", ut.httpPort)
     if err := http.ListenAndServe(":"+ut.httpPort, nil); err != nil {
         log.Fatalf("HTTP server failed: %v", err)
+    }
+}
+
+func (ut *UnifiedTokenizer) startAPIServer() {
+    mux := http.NewServeMux()
+    
+    // Health check
+    mux.HandleFunc("/health", ut.handleAPIHealth)
+    
+    // Token management
+    mux.HandleFunc("/api/v1/tokens", func(w http.ResponseWriter, r *http.Request) {
+        switch r.Method {
+        case "GET":
+            ut.handleAPIListTokens(w, r)
+        default:
+            w.WriteHeader(http.StatusMethodNotAllowed)
+        }
+    })
+    
+    // Individual token operations
+    mux.HandleFunc("/api/v1/tokens/", func(w http.ResponseWriter, r *http.Request) {
+        switch r.Method {
+        case "GET":
+            ut.handleAPIGetToken(w, r)
+        case "DELETE":
+            ut.handleAPIRevokeToken(w, r)
+        default:
+            w.WriteHeader(http.StatusMethodNotAllowed)
+        }
+    })
+    
+    // Stats
+    mux.HandleFunc("/api/v1/stats", ut.handleAPIStats)
+    
+    log.Printf("Starting API server on port %s", ut.apiPort)
+    if err := http.ListenAndServe(":"+ut.apiPort, mux); err != nil {
+        log.Fatalf("API server failed: %v", err)
     }
 }
 
@@ -640,10 +883,11 @@ func main() {
     defer ut.db.Close()
     
     log.Printf("TokenShield Unified Service starting...")
-    log.Printf("HTTP Port: %s, ICAP Port: %s", ut.httpPort, ut.icapPort)
+    log.Printf("HTTP Port: %s, ICAP Port: %s, API Port: %s", ut.httpPort, ut.icapPort, ut.apiPort)
     log.Printf("App Endpoint: %s", ut.appEndpoint)
     
-    // Start both servers
+    // Start all three servers
     go ut.startHTTPServer()
+    go ut.startAPIServer()
     ut.startICAPServer()
 }

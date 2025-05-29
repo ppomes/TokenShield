@@ -26,8 +26,8 @@ WORKDIR /root/
 # Copy the binary from builder
 COPY --from=builder /app/unified-tokenizer .
 
-# Expose both HTTP and ICAP ports
-EXPOSE 8080 1344
+# Expose HTTP, ICAP, and API ports
+EXPOSE 8080 1344 8090
 
 # Run the unified tokenizer
 CMD ["./unified-tokenizer"]

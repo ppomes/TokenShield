@@ -43,6 +43,7 @@ services:
     ports:
       - "8080:8080"  # HTTP tokenization
       - "1344:1344"  # ICAP detokenization
+      - "8090:8090"  # Management API
     networks:
       - tokenshield-net
     restart: unless-stopped
@@ -85,25 +86,6 @@ services:
       - "3129:3129"  # SSL bump port
     depends_on:
       - unified-tokenizer
-    networks:
-      - tokenshield-net
-    restart: unless-stopped
-
-  # Optional: Management API
-  api:
-    build: ./api
-    container_name: tokenshield-api
-    environment:
-      MYSQL_HOST: mysql
-      MYSQL_USER: pciproxy
-      MYSQL_PASSWORD: pciproxy123
-      MYSQL_DB: tokenshield
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-your-256-bit-base64-encoded-key-here}
-    depends_on:
-      mysql:
-        condition: service_healthy
-    ports:
-      - "8090:8090"
     networks:
       - tokenshield-net
     restart: unless-stopped
