@@ -10,9 +10,12 @@ from flask import Flask, request, jsonify, Response
 import MySQLdb
 from cryptography.fernet import Fernet
 import requests
-from pyicap import ICAPServer, BaseICAPRequestHandler
 
 app = Flask(__name__)
+
+@app.before_request
+def log_request_info():
+    logger.info(f"=== INCOMING REQUEST: {request.method} {request.path} ===")
 
 # MySQL configuration
 MYSQL_CONFIG = {
@@ -232,6 +235,7 @@ def proxy_request():
 @app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
 def tokenize_request(path):
     """Tokenize credit card data in request and forward to destination"""
+    logger.info(f"=== Processing request: {request.method} /{path} ===")
     try:
         # Get original destination from headers
         original_dest = request.headers.get('X-Original-Destination', '')
@@ -252,7 +256,14 @@ def tokenize_request(path):
         headers.pop('Content-Length', None)
         
         # Build the forward URL
-        forward_url = f"{app_endpoint}/{path}" if path else app_endpoint
+        if path:
+            forward_url = f"{app_endpoint.rstrip('/')}/{path}"
+        else:
+            forward_url = app_endpoint
+        
+        logger.info(f"Forwarding {request.method} request to: {forward_url}")
+        logger.info(f"Tokenized data: {tokenized_data}")
+        logger.info(f"Original data: {data}")
         
         # Make request to application
         if request.is_json:
@@ -285,6 +296,8 @@ def tokenize_request(path):
         
     except Exception as e:
         logger.error(f"Error in tokenize_request: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({'error': 'Internal server error'}), 500
 
 def log_request(token, request_type, source_ip, destination_url, response_status):
@@ -308,27 +321,6 @@ def log_request(token, request_type, source_ip, destination_url, response_status
 
 
 if __name__ == '__main__':
-    import threading
-    from icap_server import ICAPServer, DetokenizerICAPHandler
-    
-    # ICAP server configuration
-    icap_port = int(os.getenv('ICAP_PORT', 1344))
-    icap_address = os.getenv('ICAP_ADDRESS', '')
-    
-    # Create ICAP server instance
-    icap_server = ICAPServer((icap_address, icap_port), DetokenizerICAPHandler)
-    
-    # Run ICAP server in a separate thread
-    def run_icap_server():
-        logger.info(f"Starting ICAP server on {icap_address or '*'}:{icap_port}")
-        try:
-            icap_server.serve_forever()
-        except Exception as e:
-            logger.error(f"ICAP server error: {e}")
-    
-    icap_thread = threading.Thread(target=run_icap_server, daemon=True)
-    icap_thread.start()
-    
     # Test database connection
     try:
         conn = get_db_connection()
@@ -338,11 +330,6 @@ if __name__ == '__main__':
         logger.error(f"Failed to connect to database: {e}")
         logger.warning("Server will start but database operations will fail")
     
-    try:
-        # Run Flask app in main thread
-        logger.info("Starting Flask server on 0.0.0.0:8080")
-        app.run(host='0.0.0.0', port=8080, debug=False)  # Disable debug to prevent reloader issues
-    finally:
-        # Cleanup ICAP server on exit
-        logger.info("Shutting down servers...")
-        icap_server.shutdown()
+    # Run Flask app
+    logger.info("Starting Flask server on 0.0.0.0:8080")
+    app.run(host='0.0.0.0', port=8080, debug=False)
