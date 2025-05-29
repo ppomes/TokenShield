@@ -6,8 +6,6 @@
 
 If you believe you have found a security vulnerability in TokenShield, please report it to us through coordinated disclosure.
 
-Please send reports to: [your-email@example.com]
-
 Please include the following information:
 - Type of issue (e.g., buffer overflow, SQL injection, cross-site scripting, etc.)
 - Full paths of source file(s) related to the issue
