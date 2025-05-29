@@ -23,8 +23,9 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Payment gateway URL (goes through Squid proxy)
+# External service URLs (go through Squid proxy for tokenization)
 PAYMENT_GATEWAY_URL = os.getenv('PAYMENT_GATEWAY_URL', 'http://payment-gateway:5000')
+CARD_DISTRIBUTOR_URL = os.getenv('CARD_DISTRIBUTOR_URL', 'http://card-distributor:5001')
 HTTP_PROXY = os.getenv('HTTP_PROXY', 'http://squid:3128')
 HTTPS_PROXY = os.getenv('HTTPS_PROXY', 'http://squid:3128')
 
@@ -527,6 +528,221 @@ def list_cards():
         
     except Exception as e:
         logger.error(f"Error listing cards via API: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/import-cards')
+def import_cards_page():
+    """Web page for importing cards from distributor"""
+    IMPORT_CARDS_TEMPLATE = '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Import Cards - TokenShield Demo</title>
+        <style>
+            body { 
+                font-family: Arial, sans-serif; 
+                max-width: 800px; 
+                margin: 50px auto; 
+                padding: 20px; 
+                background: #f5f5f5;
+            }
+            .container {
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }
+            .header {
+                text-align: center;
+                margin-bottom: 30px;
+                padding-bottom: 20px;
+                border-bottom: 2px solid #eee;
+            }
+            .logo {
+                font-size: 24px;
+                font-weight: bold;
+                color: #2c3e50;
+                margin-bottom: 10px;
+            }
+            .shield {
+                color: #3498db;
+            }
+            .btn {
+                display: inline-block;
+                padding: 12px 24px;
+                background: #3498db;
+                color: white;
+                text-decoration: none;
+                border-radius: 4px;
+                border: none;
+                cursor: pointer;
+                font-size: 16px;
+                margin: 10px;
+            }
+            .btn:hover {
+                background: #2980b9;
+            }
+            .notice {
+                background: #fff3cd;
+                color: #856404;
+                padding: 15px;
+                border-radius: 4px;
+                margin-bottom: 20px;
+                border: 1px solid #ffeaa7;
+            }
+            .result {
+                margin-top: 20px;
+                padding: 15px;
+                border-radius: 4px;
+                display: none;
+            }
+            .success {
+                background: #d4edda;
+                color: #155724;
+                border: 1px solid #c3e6cb;
+            }
+            .error {
+                background: #f8d7da;
+                color: #721c24;
+                border: 1px solid #f5c6cb;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="logo">🛡️ Token<span class="shield">Shield</span></div>
+                <div>Card Import Service</div>
+            </div>
+            
+            <div class="notice">
+                ⚠️ This demonstrates response tokenization: External APIs return raw card data → 
+                Squid proxy intercepts responses → Cards are tokenized before reaching our app
+            </div>
+            
+            <h2>Import Cards from Distributor</h2>
+            <p>Click the button below to fetch cards from the external distributor API. 
+               The response will be automatically tokenized by TokenShield before reaching our application.</p>
+            
+            <button id="importBtn" class="btn">Import Cards from Distributor API</button>
+            <a href="/my-cards" class="btn" style="background: #95a5a6;">View Saved Cards</a>
+            <a href="/" class="btn" style="background: #95a5a6;">Back to Checkout</a>
+            
+            <div id="result" class="result"></div>
+        </div>
+        
+        <script>
+            document.getElementById('importBtn').addEventListener('click', async () => {
+                const btn = document.getElementById('importBtn');
+                const resultDiv = document.getElementById('result');
+                
+                btn.disabled = true;
+                btn.textContent = 'Importing...';
+                resultDiv.style.display = 'none';
+                
+                try {
+                    const response = await fetch('/api/import-cards', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (response.ok) {
+                        resultDiv.className = 'result success';
+                        resultDiv.innerHTML = `
+                            <h3>Import Successful!</h3>
+                            <p><strong>Cards imported:</strong> ${result.imported_count}</p>
+                            <p><strong>Message:</strong> ${result.message}</p>
+                            <p><em>Note: All card numbers were tokenized by TokenShield during the response.</em></p>
+                        `;
+                    } else {
+                        resultDiv.className = 'result error';
+                        resultDiv.innerHTML = `<h3>Import Failed</h3><p>${result.error}</p>`;
+                    }
+                    
+                    resultDiv.style.display = 'block';
+                    
+                } catch (error) {
+                    resultDiv.className = 'result error';
+                    resultDiv.innerHTML = `<h3>Error</h3><p>${error.message}</p>`;
+                    resultDiv.style.display = 'block';
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = 'Import Cards from Distributor API';
+                }
+            });
+        </script>
+    </body>
+    </html>
+    '''
+    
+    return render_template_string(IMPORT_CARDS_TEMPLATE)
+
+@app.route('/api/import-cards', methods=['POST'])
+def import_cards():
+    """
+    Import cards from the distributor API through Squid proxy.
+    The response will be tokenized by Squid before reaching this app.
+    """
+    try:
+        logger.info("Importing cards from distributor API through Squid proxy")
+        
+        # Call distributor API through Squid proxy for response tokenization
+        response = requests.get(
+            f"{CARD_DISTRIBUTOR_URL}/api/available-cards",
+            proxies=proxies,
+            timeout=10
+        )
+        
+        logger.info(f"Distributor response status: {response.status_code}")
+        logger.info(f"Distributor response headers: {dict(response.headers)}")
+        
+        if response.status_code != 200:
+            raise Exception(f"Distributor API returned status {response.status_code}")
+        
+        distributor_data = response.json()
+        logger.info(f"Received distributor data: {json.dumps(distributor_data, indent=2)}")
+        
+        # The response should now have tokenized card numbers thanks to Squid
+        cards = distributor_data.get('cards', [])
+        imported_count = 0
+        
+        conn = sqlite3.connect('cards.db')
+        c = conn.cursor()
+        
+        for card in cards:
+            card_number = card.get('card_number')
+            card_holder = card.get('card_holder')
+            card_type = card.get('card_type')
+            expiry = card.get('expiry')
+            last_four = card.get('last_four')
+            provider = card.get('provider', 'Unknown')
+            
+            # Check if this card already exists
+            c.execute("SELECT id FROM saved_cards WHERE card_token = ?", (card_number,))
+            if not c.fetchone():
+                # Save the card (should be tokenized by now)
+                c.execute("""INSERT INTO saved_cards 
+                            (card_holder, card_token, card_type, expiry, last_four, is_default)
+                            VALUES (?, ?, ?, ?, ?, ?)""",
+                         (f"{card_holder} ({provider})", card_number, card_type, expiry, last_four, False))
+                imported_count += 1
+                logger.info(f"Imported card: {card_type} ending in {last_four}")
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'status': 'success',
+            'imported_count': imported_count,
+            'total_available': len(cards),
+            'message': f'Successfully imported {imported_count} cards from distributor',
+            'note': 'Card numbers were tokenized by TokenShield during response interception'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error importing cards: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/health', methods=['GET'])

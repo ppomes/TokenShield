@@ -96,6 +96,7 @@ services:
     container_name: dummy-ecommerce-app
     environment:
       PAYMENT_GATEWAY_URL: http://payment-gateway:9000
+      CARD_DISTRIBUTOR_URL: http://card-distributor:5001
       HTTP_PROXY: http://squid:3128
       HTTPS_PROXY: http://squid:3128
     ports:
@@ -105,6 +106,7 @@ services:
     depends_on:
       - squid
       - payment-gateway
+      - card-distributor
     restart: unless-stopped
 
   # Dummy Payment Gateway
@@ -113,6 +115,16 @@ services:
     container_name: dummy-payment-gateway
     ports:
       - "9000:9000"
+    networks:
+      - tokenshield-net
+    restart: unless-stopped
+
+  # Card Distributor - Third-party API that returns raw card data
+  card-distributor:
+    build: ./card-distributor
+    container_name: card-distributor-api
+    ports:
+      - "5001:5001"
     networks:
       - tokenshield-net
     restart: unless-stopped

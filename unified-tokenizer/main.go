@@ -315,6 +315,8 @@ func (ut *UnifiedTokenizer) handleICAP(conn net.Conn) {
         ut.handleICAPOptions(writer, icapURI)
     case "REQMOD":
         ut.handleICAPReqmod(reader, writer, headers)
+    case "RESPMOD":
+        ut.handleICAPRespmod(reader, writer, headers)
     default:
         log.Printf("Unsupported ICAP method: %s", method)
     }
@@ -324,7 +326,13 @@ func (ut *UnifiedTokenizer) handleICAP(conn net.Conn) {
 
 func (ut *UnifiedTokenizer) handleICAPOptions(writer *bufio.Writer, icapURI string) {
     response := fmt.Sprintf("ICAP/1.0 200 OK\r\n")
-    response += "Methods: REQMOD\r\n"
+    
+    // Support both REQMOD and RESPMOD based on the URI
+    if strings.Contains(icapURI, "/respmod") {
+        response += "Methods: RESPMOD\r\n"
+    } else {
+        response += "Methods: REQMOD\r\n"
+    }
     response += "Service: TokenShield Unified 1.0\r\n"
     response += "ISTag: \"TS-001\"\r\n"
     response += "Max-Connections: 100\r\n"
@@ -421,6 +429,95 @@ func (ut *UnifiedTokenizer) handleICAPReqmod(reader *bufio.Reader, writer *bufio
     
     // Write body in chunks
     ut.writeChunked(writer, modifiedBody)
+    writer.Flush()
+}
+
+func (ut *UnifiedTokenizer) handleICAPRespmod(reader *bufio.Reader, writer *bufio.Writer, icapHeaders map[string]string) {
+    // Parse encapsulated header for response modification
+    encapHeader := icapHeaders["Encapsulated"]
+    if encapHeader == "" {
+        log.Printf("Missing Encapsulated header in RESPMOD")
+        return
+    }
+    
+    if ut.debug {
+        log.Printf("RESPMOD: Processing response for tokenization")
+        log.Printf("Encapsulated: %s", encapHeader)
+    }
+    
+    // Parse the response (request + response)
+    httpRequest, httpHeaders, body, err := ut.parseEncapsulated(reader, encapHeader)
+    if err != nil {
+        log.Printf("Error parsing encapsulated response data: %v", err)
+        return
+    }
+    
+    if ut.debug {
+        log.Printf("Response HTTP Request: %s", httpRequest)
+        log.Printf("Response body length: %d", len(body))
+    }
+    
+    // Check if we need to tokenize the response
+    modified := false
+    modifiedBody := body
+    
+    // Look for JSON responses that might contain card data
+    if len(body) > 0 {
+        contentType := ""
+        for _, header := range httpHeaders {
+            if strings.HasPrefix(strings.ToLower(header), "content-type:") {
+                contentType = strings.ToLower(header)
+                break
+            }
+        }
+        
+        if strings.Contains(contentType, "application/json") {
+            if ut.debug {
+                log.Printf("RESPMOD: Found JSON response, checking for cards to tokenize")
+            }
+            
+            tokenizedJSON, wasModified, err := ut.tokenizeJSON(string(body))
+            if err != nil {
+                log.Printf("Error tokenizing JSON response: %v", err)
+            } else if wasModified {
+                modifiedBody = []byte(tokenizedJSON)
+                modified = true
+                log.Printf("RESPMOD: Tokenized card numbers in response")
+            }
+        }
+    }
+    
+    // Send response
+    if !modified {
+        // No modification - send 204 No Content
+        response := "ICAP/1.0 204 No Content\r\n"
+        response += "ISTag: \"TS-001\"\r\n"
+        response += "\r\n"
+        writer.WriteString(response)
+    } else {
+        // Modified - send 200 OK with new body
+        response := "ICAP/1.0 200 OK\r\n"
+        response += "ISTag: \"TS-001\"\r\n"
+        response += "Encapsulated: res-hdr=0, res-body=" + fmt.Sprintf("%d", len(httpHeaders)*50) + "\r\n"  // Approximate
+        response += "\r\n"
+        
+        // Write HTTP response headers
+        for _, header := range httpHeaders {
+            response += header + "\r\n"
+            if strings.HasPrefix(strings.ToLower(header), "content-length:") {
+                // Update content length
+                response = strings.Replace(response, header, 
+                    fmt.Sprintf("Content-Length: %d", len(modifiedBody)), 1)
+            }
+        }
+        response += "\r\n"
+        
+        writer.WriteString(response)
+        
+        // Write modified body in chunks
+        ut.writeChunked(writer, modifiedBody)
+    }
+    
     writer.Flush()
 }
 
