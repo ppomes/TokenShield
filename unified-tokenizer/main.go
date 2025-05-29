@@ -63,7 +63,9 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     encKeyStr := getEnv("ENCRYPTION_KEY", "")
     if encKeyStr == "" {
         // Generate a key for development
-        encKeyStr = base64.URLEncoding.EncodeToString(fernet.Generate().Encode())
+        key := fernet.Key{} 
+        key.Generate()
+        encKeyStr = base64.URLEncoding.EncodeToString(key[:])
         log.Printf("WARNING: Using generated encryption key. Set ENCRYPTION_KEY in production!")
     }
     
@@ -72,10 +74,12 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
         return nil, fmt.Errorf("invalid encryption key: %v", err)
     }
     
-    encKey, err := fernet.DecodeKey(string(keyBytes))
-    if err != nil {
-        return nil, fmt.Errorf("failed to decode encryption key: %v", err)
+    if len(keyBytes) != 32 {
+        return nil, fmt.Errorf("encryption key must be 32 bytes")
     }
+    
+    encKey := new(fernet.Key)
+    copy(encKey[:], keyBytes)
     
     return &UnifiedTokenizer{
         db:            db,
@@ -549,17 +553,20 @@ func (ut *UnifiedTokenizer) generateToken() string {
 }
 
 func (ut *UnifiedTokenizer) storeCard(token, cardNumber string) error {
-    encrypted := ut.encryptionKey.EncryptAndSign([]byte(cardNumber))
+    encrypted, err := fernet.EncryptAndSign([]byte(cardNumber), ut.encryptionKey)
+    if err != nil {
+        return fmt.Errorf("encryption failed: %v", err)
+    }
     
-    _, err := ut.db.Exec(`
-        INSERT INTO credit_cards (token, card_number_encrypted, card_last_four, created_at, is_active)
-        VALUES (?, ?, ?, NOW(), TRUE)
-    `, token, encrypted, cardNumber[len(cardNumber)-4:], )
+    _, err = ut.db.Exec(`
+        INSERT INTO credit_cards (token, card_number_encrypted, last_four_digits, first_six_digits, expiry_month, expiry_year, created_at, is_active)
+        VALUES (?, ?, ?, ?, 12, 2025, NOW(), TRUE)
+    `, token, encrypted, cardNumber[len(cardNumber)-4:], cardNumber[:6])
     
     if err == nil {
         _, _ = ut.db.Exec(`
-            INSERT INTO token_requests (token, request_type, source_ip, destination_url, response_status, created_at)
-            VALUES (?, 'tokenize', '127.0.0.1', '', 200, NOW())
+            INSERT INTO token_requests (token, request_type, source_ip, destination_url, response_status)
+            VALUES (?, 'tokenize', '127.0.0.1', '', 200)
         `, token)
     }
     
@@ -580,15 +587,15 @@ func (ut *UnifiedTokenizer) retrieveCard(token string) string {
         return ""
     }
     
-    cardBytes := ut.encryptionKey.DecryptAndVerify(encryptedCard)
+    cardBytes := fernet.VerifyAndDecrypt(encryptedCard, 0, []*fernet.Key{ut.encryptionKey})
     if cardBytes == nil {
         log.Printf("Failed to decrypt card for token %s", token)
         return ""
     }
     
     _, _ = ut.db.Exec(`
-        INSERT INTO token_requests (token, request_type, source_ip, destination_url, response_status, created_at)
-        VALUES (?, 'detokenize', '127.0.0.1', '', 200, NOW())
+        INSERT INTO token_requests (token, request_type, source_ip, destination_url, response_status)
+        VALUES (?, 'detokenize', '127.0.0.1', '', 200)
     `, token)
     
     return string(cardBytes)
