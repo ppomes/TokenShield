@@ -121,6 +121,30 @@ CHECKOUT_TEMPLATE = '''
             font-size: 12px;
             margin-left: 10px;
         }
+        .nav-buttons {
+            text-align: center;
+            margin: 20px 0;
+            padding: 20px 0;
+            border-top: 2px solid #eee;
+        }
+        .nav-button {
+            background: #34495e;
+            color: white;
+            padding: 10px 20px;
+            margin: 0 10px;
+            text-decoration: none;
+            border-radius: 4px;
+            display: inline-block;
+            font-size: 14px;
+        }
+        .nav-button:hover {
+            background: #2c3e50;
+            color: white;
+            text-decoration: none;
+        }
+        .nav-button.active {
+            background: #3498db;
+        }
     </style>
 </head>
 <body>
@@ -164,6 +188,12 @@ CHECKOUT_TEMPLATE = '''
     </form>
     
     <div id="result"></div>
+    
+    <div class="nav-buttons">
+        <a href="/" class="nav-button active">💳 Checkout</a>
+        <a href="/my-cards" class="nav-button">📋 My Cards</a>
+        <a href="/import-cards" class="nav-button">📥 Import Cards</a>
+    </div>
     </div>
     
     <script>
@@ -414,6 +444,30 @@ def my_cards_page():
                 margin-bottom: 20px;
                 border: 1px solid #c3e6cb;
             }
+            .nav-buttons {
+                text-align: center;
+                margin: 20px 0;
+                padding: 20px 0;
+                border-top: 2px solid #eee;
+            }
+            .nav-button {
+                background: #34495e;
+                color: white;
+                padding: 10px 20px;
+                margin: 0 10px;
+                text-decoration: none;
+                border-radius: 4px;
+                display: inline-block;
+                font-size: 14px;
+            }
+            .nav-button:hover {
+                background: #2c3e50;
+                color: white;
+                text-decoration: none;
+            }
+            .nav-button.active {
+                background: #3498db;
+            }
         </style>
     </head>
     <body>
@@ -453,8 +507,10 @@ def my_cards_page():
                 </div>
             {% endif %}
             
-            <div style="text-align: center; margin-top: 30px;">
-                <a href="/" class="btn">Back to Checkout</a>
+            <div class="nav-buttons">
+                <a href="/" class="nav-button">💳 Checkout</a>
+                <a href="/my-cards" class="nav-button active">📋 My Cards</a>
+                <a href="/import-cards" class="nav-button">📥 Import Cards</a>
             </div>
         </div>
     </body>
@@ -606,6 +662,30 @@ def import_cards_page():
                 color: #721c24;
                 border: 1px solid #f5c6cb;
             }
+            .nav-buttons {
+                text-align: center;
+                margin: 20px 0;
+                padding: 20px 0;
+                border-top: 2px solid #eee;
+            }
+            .nav-button {
+                background: #34495e;
+                color: white;
+                padding: 10px 20px;
+                margin: 0 10px;
+                text-decoration: none;
+                border-radius: 4px;
+                display: inline-block;
+                font-size: 14px;
+            }
+            .nav-button:hover {
+                background: #2c3e50;
+                color: white;
+                text-decoration: none;
+            }
+            .nav-button.active {
+                background: #3498db;
+            }
         </style>
     </head>
     <body>
@@ -625,10 +705,14 @@ def import_cards_page():
                The response will be automatically tokenized by TokenShield before reaching our application.</p>
             
             <button id="importBtn" class="btn">Import Cards from Distributor API</button>
-            <a href="/my-cards" class="btn" style="background: #95a5a6;">View Saved Cards</a>
-            <a href="/" class="btn" style="background: #95a5a6;">Back to Checkout</a>
             
             <div id="result" class="result"></div>
+            
+            <div class="nav-buttons">
+                <a href="/" class="nav-button">💳 Checkout</a>
+                <a href="/my-cards" class="nav-button">📋 My Cards</a>
+                <a href="/import-cards" class="nav-button active">📥 Import Cards</a>
+            </div>
         </div>
         
         <script>

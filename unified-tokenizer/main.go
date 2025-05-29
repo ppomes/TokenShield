@@ -571,29 +571,34 @@ func (ut *UnifiedTokenizer) parseEncapsulated(reader *bufio.Reader, encapHeader 
     var body []byte
     var err error
     
-    // Skip request headers section if present
-    if _, hasReqHdr := positions["req-hdr"]; hasReqHdr {
-        if ut.debug {
-            log.Printf("DEBUG: Skipping request headers section")
-        }
-        // Read and discard until we hit response headers or read enough bytes
-        for {
-            line, err := reader.ReadString('\n')
-            if err != nil {
-                return "", nil, nil, err
-            }
-            if strings.TrimSpace(line) == "" {
-                break // End of request headers
-            }
-        }
+    // Determine if this is REQMOD or RESPMOD
+    isRespmod := false
+    if _, hasResHdr := positions["res-hdr"]; hasResHdr {
+        isRespmod = true
     }
     
-    // Read response status line and headers if this is RESPMOD
-    if _, hasResHdr := positions["res-hdr"]; hasResHdr {
-        if ut.debug {
-            log.Printf("DEBUG: Reading response headers section")
+    if isRespmod {
+        // RESPMOD: Skip request headers section if present, then read response headers
+        if _, hasReqHdr := positions["req-hdr"]; hasReqHdr {
+            if ut.debug {
+                log.Printf("DEBUG: Skipping request headers section for RESPMOD")
+            }
+            // Read and discard request headers
+            for {
+                line, err := reader.ReadString('\n')
+                if err != nil {
+                    return "", nil, nil, err
+                }
+                if strings.TrimSpace(line) == "" {
+                    break // End of request headers
+                }
+            }
         }
-        // Read HTTP response status line
+        
+        // Read response status line and headers  
+        if ut.debug {
+            log.Printf("DEBUG: Reading response headers section for RESPMOD")
+        }
         requestLine, err = reader.ReadString('\n')
         if err != nil {
             return "", nil, nil, err
@@ -613,13 +618,17 @@ func (ut *UnifiedTokenizer) parseEncapsulated(reader *bufio.Reader, encapHeader 
             httpHeaders = append(httpHeaders, line)
         }
     } else {
-        // REQMOD - read request line and headers
+        // REQMOD: Read request line and headers
+        if ut.debug {
+            log.Printf("DEBUG: Reading request headers section for REQMOD")
+        }
         requestLine, err = reader.ReadString('\n')
         if err != nil {
             return "", nil, nil, err
         }
         requestLine = strings.TrimSpace(requestLine)
         
+        // Read HTTP request headers
         for {
             line, err := reader.ReadString('\n')
             if err != nil {
