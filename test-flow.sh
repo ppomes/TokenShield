@@ -48,7 +48,7 @@ echo
 
 # Test 3: Check payment gateway
 echo -e "${YELLOW}Test 3: Checking payment gateway${NC}"
-curl -s -k https://localhost:9000/ | jq .
+curl -s http://localhost:9000/ | jq .
 echo
 
 # Test 4: View HAProxy stats
