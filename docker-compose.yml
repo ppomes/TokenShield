@@ -22,25 +22,34 @@ services:
       timeout: 20s
       retries: 10
 
-  # Tokenizer Service
-  tokenizer:
-    build: ./tokenizer
-    container_name: tokenshield-tokenizer
+  # Unified Tokenizer Service (HTTP + ICAP)
+  unified-tokenizer:
+    build: ./unified-tokenizer
+    container_name: tokenshield-unified
     environment:
-      MYSQL_HOST: mysql
-      MYSQL_USER: pciproxy
-      MYSQL_PASSWORD: pciproxy123
-      MYSQL_DB: tokenshield
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: pciproxy
+      DB_PASSWORD: pciproxy123
+      DB_NAME: tokenshield
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-your-256-bit-base64-encoded-key-here}
       APP_ENDPOINT: ${APP_ENDPOINT:-http://dummy-app:8000}
+      HTTP_PORT: 8080
+      ICAP_PORT: 1344
+      DEBUG_MODE: "1"
     depends_on:
       mysql:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "8080:8080"  # HTTP tokenization
+      - "1344:1344"  # ICAP detokenization
     networks:
       - tokenshield-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "1344"]
+      timeout: 5s
+      retries: 5
 
   # HAProxy - Incoming traffic interceptor
   haproxy:
@@ -55,38 +64,12 @@ services:
       - "443:443"
       - "8404:8404"  # Stats page
     depends_on:
-      - tokenizer
+      - unified-tokenizer
     networks:
       - tokenshield-net
     environment:
       APP_ENDPOINT: ${APP_ENDPOINT:-http://your-app:8000}
     restart: unless-stopped
-
-  # ICAP Server (Go implementation)
-  icap-server:
-    build: ./icap-server-go
-    container_name: tokenshield-icap
-    environment:
-      DB_HOST: mysql
-      DB_PORT: 3306
-      DB_USER: pciproxy
-      DB_PASSWORD: pciproxy123
-      DB_NAME: tokenshield
-      ICAP_PORT: 1344
-      DEBUG_MODE: "1"
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-your-256-bit-base64-encoded-key-here}
-    depends_on:
-      mysql:
-        condition: service_healthy
-    ports:
-      - "1344:1344"
-    networks:
-      - tokenshield-net
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "1344"]
-      timeout: 5s
-      retries: 5
 
   # Squid - Outgoing traffic interceptor
   squid:
@@ -101,7 +84,7 @@ services:
       - "3128:3128"
       - "3129:3129"  # SSL bump port
     depends_on:
-      - icap-server
+      - unified-tokenizer
     networks:
       - tokenshield-net
     restart: unless-stopped
