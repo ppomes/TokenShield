@@ -62,9 +62,9 @@ services:
       APP_ENDPOINT: ${APP_ENDPOINT:-http://your-app:8000}
     restart: unless-stopped
 
-  # ICAP Server (C implementation)
+  # ICAP Server (Go implementation)
   icap-server:
-    build: ./icap-server
+    build: ./icap-server-go
     container_name: pci-proxy-icap
     environment:
       DB_HOST: mysql
@@ -74,6 +74,7 @@ services:
       DB_NAME: pci_proxy
       ICAP_PORT: 1344
       DEBUG_MODE: "1"
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-your-256-bit-base64-encoded-key-here}
     depends_on:
       mysql:
         condition: service_healthy
