@@ -448,7 +448,7 @@ func (ut *UnifiedTokenizer) handleICAPRespmod(reader *bufio.Reader, writer *bufi
     // Parse the response (request + response)
     httpRequest, httpHeaders, body, err := ut.parseEncapsulated(reader, encapHeader)
     if err != nil {
-        log.Printf("Error parsing encapsulated response data: %v", err)
+        log.Printf("RESPMOD Error parsing encapsulated response data: %v", err)
         return
     }
     
@@ -460,6 +460,19 @@ func (ut *UnifiedTokenizer) handleICAPRespmod(reader *bufio.Reader, writer *bufi
     // Check if we need to tokenize the response
     modified := false
     modifiedBody := body
+    
+    // Handle null-body case - send 204 No Content
+    if len(body) == 0 {
+        if ut.debug {
+            log.Printf("RESPMOD: No body to process, sending 204 No Content")
+        }
+        response := "ICAP/1.0 204 No Content\r\n"
+        response += "ISTag: \"TS-001\"\r\n"
+        response += "\r\n"
+        writer.WriteString(response)
+        writer.Flush()
+        return
+    }
     
     // Look for JSON responses that might contain card data
     if len(body) > 0 {
@@ -496,23 +509,34 @@ func (ut *UnifiedTokenizer) handleICAPRespmod(reader *bufio.Reader, writer *bufi
         writer.WriteString(response)
     } else {
         // Modified - send 200 OK with new body
-        response := "ICAP/1.0 200 OK\r\n"
-        response += "ISTag: \"TS-001\"\r\n"
-        response += "Encapsulated: res-hdr=0, res-body=" + fmt.Sprintf("%d", len(httpHeaders)*50) + "\r\n"  // Approximate
-        response += "\r\n"
         
-        // Write HTTP response headers
+        // Build HTTP response first to calculate exact positions
+        // Include HTTP status line + headers
+        httpHeadersStr := httpRequest + "\r\n" // HTTP status line
         for _, header := range httpHeaders {
-            response += header + "\r\n"
             if strings.HasPrefix(strings.ToLower(header), "content-length:") {
-                // Update content length
-                response = strings.Replace(response, header, 
-                    fmt.Sprintf("Content-Length: %d", len(modifiedBody)), 1)
+                // Update content length for modified body
+                httpHeadersStr += fmt.Sprintf("Content-Length: %d\r\n", len(modifiedBody))
+            } else {
+                httpHeadersStr += header + "\r\n"
             }
         }
+        httpHeadersStr += "\r\n" // End of headers
+        
+        // Calculate exact byte positions for Encapsulated header
+        resBodyOffset := len(httpHeadersStr)
+        
+        // Build ICAP response
+        response := "ICAP/1.0 200 OK\r\n"
+        response += "ISTag: \"TS-001\"\r\n"
+        response += fmt.Sprintf("Encapsulated: res-hdr=0, res-body=%d\r\n", resBodyOffset)
         response += "\r\n"
         
+        // Write ICAP headers
         writer.WriteString(response)
+        
+        // Write HTTP response headers
+        writer.WriteString(httpHeadersStr)
         
         // Write modified body in chunks
         ut.writeChunked(writer, modifiedBody)
@@ -522,6 +546,8 @@ func (ut *UnifiedTokenizer) handleICAPRespmod(reader *bufio.Reader, writer *bufi
 }
 
 func (ut *UnifiedTokenizer) parseEncapsulated(reader *bufio.Reader, encapHeader string) (string, []string, []byte, error) {
+    log.Printf("DEBUG_FORCE: parseEncapsulated called with header: %s", encapHeader)
+    
     // Parse positions from Encapsulated header
     positions := make(map[string]int)
     parts := strings.Split(encapHeader, ",")
@@ -533,34 +559,114 @@ func (ut *UnifiedTokenizer) parseEncapsulated(reader *bufio.Reader, encapHeader 
         }
     }
     
-    // Read HTTP request line
-    requestLine, err := reader.ReadString('\n')
-    if err != nil {
-        return "", nil, nil, err
+    if ut.debug {
+        log.Printf("DEBUG: parseEncapsulated positions: %+v", positions)
     }
-    requestLine = strings.TrimSpace(requestLine)
     
-    // Read HTTP headers
+    // For RESPMOD: req-hdr=0, res-hdr=175, res-body=322
+    // This means: request headers start at 0, response headers at 175, response body at 322
+    
+    var requestLine string
     var httpHeaders []string
-    for {
-        line, err := reader.ReadString('\n')
+    var body []byte
+    var err error
+    
+    // Skip request headers section if present
+    if _, hasReqHdr := positions["req-hdr"]; hasReqHdr {
+        if ut.debug {
+            log.Printf("DEBUG: Skipping request headers section")
+        }
+        // Read and discard until we hit response headers or read enough bytes
+        for {
+            line, err := reader.ReadString('\n')
+            if err != nil {
+                return "", nil, nil, err
+            }
+            if strings.TrimSpace(line) == "" {
+                break // End of request headers
+            }
+        }
+    }
+    
+    // Read response status line and headers if this is RESPMOD
+    if _, hasResHdr := positions["res-hdr"]; hasResHdr {
+        if ut.debug {
+            log.Printf("DEBUG: Reading response headers section")
+        }
+        // Read HTTP response status line
+        requestLine, err = reader.ReadString('\n')
         if err != nil {
             return "", nil, nil, err
         }
-        line = strings.TrimSpace(line)
-        if line == "" {
-            break
+        requestLine = strings.TrimSpace(requestLine)
+        
+        // Read HTTP response headers
+        for {
+            line, err := reader.ReadString('\n')
+            if err != nil {
+                return "", nil, nil, err
+            }
+            line = strings.TrimSpace(line)
+            if line == "" {
+                break // End of headers
+            }
+            httpHeaders = append(httpHeaders, line)
         }
-        httpHeaders = append(httpHeaders, line)
+    } else {
+        // REQMOD - read request line and headers
+        requestLine, err = reader.ReadString('\n')
+        if err != nil {
+            return "", nil, nil, err
+        }
+        requestLine = strings.TrimSpace(requestLine)
+        
+        for {
+            line, err := reader.ReadString('\n')
+            if err != nil {
+                return "", nil, nil, err
+            }
+            line = strings.TrimSpace(line)
+            if line == "" {
+                break
+            }
+            httpHeaders = append(httpHeaders, line)
+        }
     }
     
     // Read body if present
-    var body []byte
-    if _, hasBody := positions["req-body"]; hasBody {
+    if _, hasReqBody := positions["req-body"]; hasReqBody {
+        if ut.debug {
+            log.Printf("DEBUG: Reading req-body")
+        }
         body, err = ut.readChunked(reader)
         if err != nil {
             return "", nil, nil, err
         }
+    } else if _, hasResBody := positions["res-body"]; hasResBody {
+        if ut.debug {
+            log.Printf("DEBUG: Reading res-body at position %d", positions["res-body"])
+        }
+        body, err = ut.readChunked(reader)
+        if err != nil {
+            if ut.debug {
+                log.Printf("DEBUG: Error reading res-body: %v", err)
+            }
+            return "", nil, nil, err
+        }
+        if ut.debug {
+            log.Printf("DEBUG: Successfully read res-body: %d bytes", len(body))
+        }
+    } else {
+        if ut.debug {
+            log.Printf("DEBUG: No body found in positions: %+v", positions)
+        }
+        // For null-body cases, we still need to return a proper response
+        // This typically means there's no body to process
+    }
+    
+    if ut.debug {
+        log.Printf("DEBUG: parseEncapsulated result - requestLine: '%s', headers: %d, body: %d bytes", 
+            requestLine, len(httpHeaders), len(body))
     }
     
     return requestLine, httpHeaders, body, nil
@@ -569,17 +675,35 @@ func (ut *UnifiedTokenizer) parseEncapsulated(reader *bufio.Reader, encapHeader 
 func (ut *UnifiedTokenizer) readChunked(reader *bufio.Reader) ([]byte, error) {
     var result []byte
     
+    if ut.debug {
+        log.Printf("DEBUG: readChunked starting")
+    }
+    
     for {
         // Read chunk size
         sizeLine, err := reader.ReadString('\n')
         if err != nil {
+            if ut.debug {
+                log.Printf("DEBUG: readChunked error reading size line: %v", err)
+            }
             return nil, err
         }
         
         sizeLine = strings.TrimSpace(sizeLine)
+        if ut.debug {
+            log.Printf("DEBUG: readChunked size line: '%s'", sizeLine)
+        }
+        
         size, err := strconv.ParseInt(sizeLine, 16, 64)
         if err != nil {
+            if ut.debug {
+                log.Printf("DEBUG: readChunked error parsing size: %v", err)
+            }
             return nil, err
+        }
+        
+        if ut.debug {
+            log.Printf("DEBUG: readChunked chunk size: %d", size)
         }
         
         if size == 0 {
