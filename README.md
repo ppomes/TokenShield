@@ -31,32 +31,49 @@
 
 ---
 
-**TokenShield** is a complete PCI compliance solution that acts as a secure gateway between your application and sensitive credit card data. Using HAProxy for intelligent traffic routing and Squid for secure outbound connections, TokenShield ensures your application never touches raw credit card information.
+**TokenShield** is a complete PCI compliance solution that acts as a secure gateway between your application and sensitive credit card data. Built with a unified Go service architecture, it uses HAProxy for intelligent traffic routing and Squid for secure outbound connections, ensuring your application never touches raw credit card information.
+
+## Key Features
+
+- **Unified Go Service**: Single high-performance binary handling all tokenization operations
+- **Triple Protocol Support**: HTTP (tokenization), ICAP (detokenization), REST API (management)
+- **Zero-Touch Architecture**: Your application never sees real credit card data
+- **Transparent Integration**: Works with existing payment gateways without modification
+- **PCI Scope Reduction**: Moves sensitive data handling outside your application boundary
 
 ## Architecture Overview
 
 ```
-┌─────────────┐     ┌───────────┐     ┌────────────┐     ┌─────────────┐
-│   Client    │────▶│  HAProxy  │────▶│ Tokenizer  │────▶│  Your App   │
-│  (Browser)  │     │ (Port 80) │     │(Port 8080) │     │ (Port 8000) │
-└─────────────┘     └───────────┘     └────────────┘     └─────────────┘
-                                             │
-                                             ▼
-                                       ┌──────────┐
-                                       │  MySQL   │
-                                       │    DB    │
-                                       └──────────┘
+┌─────────────┐     ┌───────────┐     ┌────────────────────┐     ┌─────────────┐
+│   Client    │────▶│  HAProxy  │────▶│ Unified Tokenizer  │────▶│  Your App   │
+│  (Browser)  │     │ (Port 80) │     │  (HTTP: 8080)      │     │ (Port 8000) │
+└─────────────┘     └───────────┘     └────────────────────┘     └─────────────┘
+                                                 │
+                                                 ▼
+                                           ┌──────────┐
+                                           │  MySQL   │
+                                           │    DB    │
+                                           └──────────┘
                                             
-┌─────────────┐     ┌───────────┐     ┌────────────┐     ┌─────────────┐
-│  Your App   │────▶│   Squid   │────▶│ Tokenizer  │────▶│   Payment   │
-│             │     │(Port 3128)│     │   (ICAP)   │     │   Gateway   │
-└─────────────┘     └───────────┘     └────────────┘     └─────────────┘
+┌─────────────┐     ┌───────────┐     ┌────────────────────┐     ┌─────────────┐
+│  Your App   │────▶│   Squid   │────▶│ Unified Tokenizer  │────▶│   Payment   │
+│             │     │(Port 3128)│     │  (ICAP: 1344)     │     │   Gateway   │
+└─────────────┘     └───────────┘     └────────────────────┘     └─────────────┘
+                                                 │
+                                      ┌──────────┴──────────┐
+                                      │   Management API    │
+                                      │    (Port 8090)      │
+                                      └─────────────────────┘
 ```
 
 ## Quick Start
 
 ### 1. Generate Encryption Key
 ```bash
+# Using OpenSSL (recommended)
+openssl rand -base64 32
+
+# Or using Python if you prefer
 python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
@@ -114,7 +131,7 @@ Watch the logs to see the tokenization in action:
 docker-compose logs -f
 
 # Specific service logs
-docker-compose logs -f tokenizer
+docker-compose logs -f unified-tokenizer
 docker-compose logs -f dummy-app
 docker-compose logs -f payment-gateway
 ```
@@ -147,11 +164,13 @@ curl http://localhost:8090/api/v1/stats \
 ## Services and Ports
 
 - **HAProxy**: 80 (HTTP), 443 (HTTPS), 8404 (Stats)
-- **Dummy App**: 8000
-- **Tokenizer**: 8080 (HTTP), 1344 (ICAP)
+- **Unified Tokenizer**: 
+  - 8080 (HTTP Tokenization)
+  - 1344 (ICAP Detokenization)
+  - 8090 (Management API)
 - **MySQL**: 3306
 - **Squid**: 3128 (HTTP), 3129 (HTTPS)
-- **Management API**: 8090
+- **Dummy App**: 8000
 - **Payment Gateway**: 9000
 
 ## Security Considerations
@@ -186,6 +205,9 @@ docker-compose ps mysql
 
 # Connect to MySQL
 docker exec -it tokenshield-mysql mysql -u pciproxy -ppciproxy123 tokenshield
+
+# Check unified tokenizer logs
+docker-compose logs unified-tokenizer | grep -i error
 ```
 
 ### Certificate issues
@@ -209,11 +231,25 @@ acl payment_providers dstdomain .newprovider.com
 
 ### Customizing Tokenization Rules
 
-Edit `tokenizer/app.py` to modify the card detection patterns or tokenization logic.
+Edit `unified-tokenizer/main.go` to modify the card detection patterns or tokenization logic. The unified service handles:
+- Credit card pattern matching via regex
+- Token generation and storage
+- Encryption/decryption with Fernet
+- Both HTTP and ICAP protocols
 
 ### Testing without Docker
 
-You can run individual components locally for development. See each component's README for details.
+The unified tokenizer can be run locally:
+```bash
+cd unified-tokenizer
+go mod download
+go run main.go
+```
+
+Make sure to set the required environment variables:
+- `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`
+- `ENCRYPTION_KEY`
+- `HTTP_PORT`, `ICAP_PORT`, `API_PORT`
 
 ## License
 
