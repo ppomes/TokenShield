@@ -86,7 +86,7 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
         db:            db,
         encryptionKey: encKey,
         appEndpoint:   getEnv("APP_ENDPOINT", "http://dummy-app:8000"),
-        tokenRegex:    regexp.MustCompile(`tok_[a-zA-Z0-9_\-]+`),
+        tokenRegex:    regexp.MustCompile(`tok_[a-zA-Z0-9_\-]+=*`),
         cardRegex:     regexp.MustCompile(`\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|6(?:011|5[0-9]{2})[0-9]{12}|(?:2131|1800|35\d{3})\d{11})\b`),
         httpPort:      getEnv("HTTP_PORT", "8080"),
         icapPort:      getEnv("ICAP_PORT", "1344"),
@@ -100,6 +100,13 @@ func getEnv(key, defaultValue string) string {
         return value
     }
     return defaultValue
+}
+
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
 }
 
 // HTTP Tokenization Handler
@@ -185,18 +192,67 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
     }
     defer resp.Body.Close()
     
-    // Copy response headers
-    for key, values := range resp.Header {
-        for _, value := range values {
-            w.Header().Add(key, value)
+    // Read response body
+    respBody, err := io.ReadAll(resp.Body)
+    if err != nil {
+        log.Printf("Error reading response body: %v", err)
+        http.Error(w, "Error reading response", http.StatusInternalServerError)
+        return
+    }
+    
+    // Check if this is an endpoint that needs response detokenization
+    processedRespBody := respBody
+    needsDetokenization := (path == "/api/cards" || path == "/my-cards") && resp.StatusCode == 200
+    
+    if needsDetokenization {
+        respContentType := resp.Header.Get("Content-Type")
+        if ut.debug {
+            log.Printf("DEBUG: Response content type: %s", respContentType)
+            log.Printf("DEBUG: Response body preview: %s", string(respBody[:min(200, len(respBody))]))
+        }
+        
+        // Handle JSON responses (API)
+        if strings.Contains(respContentType, "application/json") {
+            detokenized, modified, err := ut.detokenizeJSON(string(respBody))
+            if err != nil {
+                log.Printf("Error detokenizing JSON response: %v", err)
+            } else if modified {
+                processedRespBody = []byte(detokenized)
+                log.Printf("Detokenized JSON response body for %s", path)
+            } else if ut.debug {
+                log.Printf("DEBUG: No tokens found to detokenize in JSON response")
+            }
+        } else if strings.Contains(respContentType, "text/html") {
+            // Handle HTML responses (web pages)
+            detokenized, modified, err := ut.detokenizeHTML(string(respBody))
+            if err != nil {
+                log.Printf("Error detokenizing HTML response: %v", err)
+            } else if modified {
+                processedRespBody = []byte(detokenized)
+                log.Printf("Detokenized HTML response body for %s", path)
+            } else if ut.debug {
+                log.Printf("DEBUG: No tokens found to detokenize in HTML response")
+            }
         }
     }
+    
+    // Copy response headers
+    for key, values := range resp.Header {
+        if key != "Content-Length" {
+            for _, value := range values {
+                w.Header().Add(key, value)
+            }
+        }
+    }
+    
+    // Set correct content length
+    w.Header().Set("Content-Length", strconv.Itoa(len(processedRespBody)))
     
     // Set status code
     w.WriteHeader(resp.StatusCode)
     
-    // Copy response body
-    io.Copy(w, resp.Body)
+    // Write response body
+    w.Write(processedRespBody)
     
     duration := time.Since(start)
     log.Printf("Request %s %s completed in %v with status %d", r.Method, path, duration, resp.StatusCode)
@@ -480,13 +536,25 @@ func (ut *UnifiedTokenizer) tokenizeJSON(jsonStr string) (string, bool, error) {
 
 // Detokenization logic
 func (ut *UnifiedTokenizer) detokenizeJSON(jsonStr string) (string, bool, error) {
+    if ut.debug {
+        log.Printf("DEBUG: detokenizeJSON called with: %s", jsonStr[:min(200, len(jsonStr))])
+    }
+    
     var data interface{}
     if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
         return jsonStr, false, err
     }
     
+    if ut.debug {
+        log.Printf("DEBUG: Unmarshaled data type: %T", data)
+    }
+    
     modified := false
     ut.processValue(&data, &modified, false) // false for detokenization
+    
+    if ut.debug {
+        log.Printf("DEBUG: detokenizeJSON modified=%v", modified)
+    }
     
     result, err := json.Marshal(data)
     if err != nil {
@@ -496,12 +564,52 @@ func (ut *UnifiedTokenizer) detokenizeJSON(jsonStr string) (string, bool, error)
     return string(result), modified, nil
 }
 
+// Detokenize HTML content
+func (ut *UnifiedTokenizer) detokenizeHTML(htmlStr string) (string, bool, error) {
+    if ut.debug {
+        log.Printf("DEBUG: detokenizeHTML called, length: %d", len(htmlStr))
+    }
+    
+    modified := false
+    result := htmlStr
+    
+    // Find all tokens in the HTML content
+    matches := ut.tokenRegex.FindAllString(htmlStr, -1)
+    if ut.debug {
+        log.Printf("DEBUG: Found %d potential tokens in HTML", len(matches))
+    }
+    
+    for _, token := range matches {
+        if ut.debug {
+            log.Printf("DEBUG: Attempting to detokenize token: %s", token)
+        }
+        if card := ut.retrieveCard(token); card != "" {
+            result = strings.ReplaceAll(result, token, card)
+            modified = true
+            log.Printf("Detokenized token %s in HTML content", token)
+        } else if ut.debug {
+            log.Printf("DEBUG: Failed to retrieve card for token: %s", token)
+        }
+    }
+    
+    return result, modified, nil
+}
+
 func (ut *UnifiedTokenizer) processValue(v interface{}, modified *bool, tokenize bool) {
     switch val := v.(type) {
     case *interface{}:
+        if ut.debug && !tokenize {
+            log.Printf("DEBUG: Processing pointer to interface{}")
+        }
         ut.processValue(*val, modified, tokenize)
     case map[string]interface{}:
+        if ut.debug && !tokenize {
+            log.Printf("DEBUG: Processing map with keys: %v", ut.getMapKeys(val))
+        }
         for k, v := range val {
+            if ut.debug && !tokenize {
+                log.Printf("DEBUG: Processing map key '%s' with value type %T", k, v)
+            }
             if tokenize && ut.isCreditCardField(k) {
                 if str, ok := v.(string); ok && ut.cardRegex.MatchString(str) {
                     token := ut.generateToken()
@@ -512,19 +620,37 @@ func (ut *UnifiedTokenizer) processValue(v interface{}, modified *bool, tokenize
                     }
                 }
             } else if !tokenize && ut.isCreditCardField(k) {
-                if str, ok := v.(string); ok && ut.tokenRegex.MatchString(str) {
-                    if card := ut.retrieveCard(str); card != "" {
-                        val[k] = card
-                        *modified = true
-                        log.Printf("Detokenized token %s", str)
+                if str, ok := v.(string); ok {
+                    if ut.debug {
+                        log.Printf("DEBUG: Checking field '%s' with value '%s' for detokenization", k, str)
+                    }
+                    if ut.tokenRegex.MatchString(str) {
+                        if card := ut.retrieveCard(str); card != "" {
+                            val[k] = card
+                            *modified = true
+                            log.Printf("Detokenized token %s in field %s", str, k)
+                        } else if ut.debug {
+                            log.Printf("DEBUG: Failed to retrieve card for token %s", str)
+                        }
+                    } else if ut.debug {
+                        log.Printf("DEBUG: Value '%s' doesn't match token regex", str)
                     }
                 }
             } else {
+                if ut.debug && !tokenize {
+                    log.Printf("DEBUG: Recursively processing non-card field '%s' with value type %T", k, v)
+                }
                 ut.processValue(v, modified, tokenize)
             }
         }
     case []interface{}:
+        if ut.debug && !tokenize {
+            log.Printf("DEBUG: Processing array with %d elements", len(val))
+        }
         for i := range val {
+            if ut.debug && !tokenize && i == 0 {
+                log.Printf("DEBUG: First array element type: %T", val[i])
+            }
             ut.processValue(&val[i], modified, tokenize)
         }
     case string:
@@ -537,9 +663,26 @@ func (ut *UnifiedTokenizer) processValue(v interface{}, modified *bool, tokenize
     }
 }
 
+func (ut *UnifiedTokenizer) getMapKeys(m map[string]interface{}) []string {
+    keys := make([]string, 0, len(m))
+    for k := range m {
+        keys = append(keys, k)
+    }
+    return keys
+}
+
 func (ut *UnifiedTokenizer) isCreditCardField(fieldName string) bool {
     lowerField := strings.ToLower(fieldName)
-    cardFields := []string{"card_number", "cardnumber", "card", "creditcard", "credit_card", "pan", "account_number"}
+    // Exact matches to avoid false positives like "cards" matching "card"
+    exactMatches := []string{"card", "pan"}
+    for _, field := range exactMatches {
+        if lowerField == field {
+            return true
+        }
+    }
+    
+    // Partial matches for compound names
+    cardFields := []string{"card_number", "cardnumber", "creditcard", "credit_card", "account_number"}
     for _, field := range cardFields {
         if strings.Contains(lowerField, field) {
             return true
@@ -576,6 +719,10 @@ func (ut *UnifiedTokenizer) storeCard(token, cardNumber string) error {
 }
 
 func (ut *UnifiedTokenizer) retrieveCard(token string) string {
+    if ut.debug {
+        log.Printf("DEBUG: retrieveCard called with token: %s", token)
+    }
+    
     var encryptedCard []byte
     err := ut.db.QueryRow(`
         SELECT card_number_encrypted FROM credit_cards 
@@ -583,7 +730,11 @@ func (ut *UnifiedTokenizer) retrieveCard(token string) string {
     `, token).Scan(&encryptedCard)
     
     if err != nil {
-        if err != sql.ErrNoRows {
+        if err == sql.ErrNoRows {
+            if ut.debug {
+                log.Printf("DEBUG: Token not found in database: %s", token)
+            }
+        } else {
             log.Printf("Database error: %v", err)
         }
         return ""

@@ -7,6 +7,8 @@ import os
 import json
 import logging
 import requests
+import sqlite3
+from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string
 
 app = Flask(__name__)
@@ -25,6 +27,24 @@ proxies = {
     'http': HTTP_PROXY,
     'https': HTTPS_PROXY
 }
+
+# Initialize SQLite database for storing cards
+def init_db():
+    conn = sqlite3.connect('cards.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS saved_cards
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  card_holder TEXT NOT NULL,
+                  card_token TEXT NOT NULL,
+                  card_type TEXT,
+                  expiry TEXT,
+                  last_four TEXT,
+                  is_default BOOLEAN DEFAULT 0,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 # Simple HTML template for checkout page
 CHECKOUT_TEMPLATE = '''
@@ -250,6 +270,30 @@ def checkout():
             raise
         logger.info(f"Gateway response: {json.dumps(gateway_response, indent=2)}")
         
+        # Save the card if it's tokenized and payment was successful
+        if is_tokenized and gateway_response.get('status') == 'success':
+            try:
+                conn = sqlite3.connect('cards.db')
+                c = conn.cursor()
+                
+                # Check if this token already exists
+                c.execute("SELECT id FROM saved_cards WHERE card_token = ?", (card_number,))
+                if not c.fetchone():
+                    # Extract card info from gateway response
+                    card_type = gateway_response.get('card_type', 'Unknown')
+                    last_four = gateway_response.get('card_last_four', '****')
+                    
+                    # Save the card
+                    c.execute("""INSERT INTO saved_cards 
+                                (card_holder, card_token, card_type, expiry, last_four, is_default)
+                                VALUES (?, ?, ?, ?, ?, ?)""",
+                             (card_holder, card_number, card_type, expiry, last_four, False))
+                    conn.commit()
+                    logger.info(f"Saved tokenized card ending in {last_four}")
+                conn.close()
+            except Exception as e:
+                logger.error(f"Error saving card: {e}")
+        
         return jsonify({
             'status': 'success',
             'transaction_id': gateway_response.get('transaction_id'),
@@ -259,6 +303,230 @@ def checkout():
         
     except Exception as e:
         logger.error(f"Error processing checkout: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/my-cards')
+def my_cards_page():
+    """Display saved cards in a web page"""
+    # In a real app, you would check authentication here
+    # For demo purposes, we'll just display the cards
+    
+    MY_CARDS_TEMPLATE = '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>My Saved Cards - TokenShield Demo</title>
+        <style>
+            body { 
+                font-family: Arial, sans-serif; 
+                max-width: 800px; 
+                margin: 50px auto; 
+                padding: 20px; 
+                background: #f5f5f5;
+            }
+            .container {
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }
+            .header {
+                text-align: center;
+                margin-bottom: 30px;
+                padding-bottom: 20px;
+                border-bottom: 2px solid #eee;
+            }
+            .logo {
+                font-size: 24px;
+                font-weight: bold;
+                color: #2c3e50;
+                margin-bottom: 10px;
+            }
+            .shield {
+                color: #3498db;
+            }
+            .tagline {
+                color: #7f8c8d;
+                font-size: 14px;
+            }
+            .card-item {
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                padding: 20px;
+                margin-bottom: 15px;
+                background: #f9f9f9;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .card-info {
+                flex: 1;
+            }
+            .card-number {
+                font-size: 18px;
+                font-weight: bold;
+                margin-bottom: 5px;
+                font-family: monospace;
+                letter-spacing: 2px;
+            }
+            .card-details {
+                color: #666;
+                font-size: 14px;
+            }
+            .card-type {
+                display: inline-block;
+                background: #e8f4f8;
+                color: #3498db;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-size: 12px;
+                margin-left: 10px;
+            }
+            .no-cards {
+                text-align: center;
+                padding: 40px;
+                color: #666;
+            }
+            .btn {
+                display: inline-block;
+                padding: 10px 20px;
+                background: #3498db;
+                color: white;
+                text-decoration: none;
+                border-radius: 4px;
+                margin-top: 20px;
+            }
+            .btn:hover {
+                background: #2980b9;
+            }
+            .notice {
+                background: #d4edda;
+                color: #155724;
+                padding: 15px;
+                border-radius: 4px;
+                margin-bottom: 20px;
+                border: 1px solid #c3e6cb;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="logo">🛡️ Token<span class="shield">Shield</span></div>
+                <div class="tagline">Your Saved Payment Methods</div>
+            </div>
+            
+            <div class="notice">
+                ℹ️ Card numbers are automatically detokenized by TokenShield for secure display
+            </div>
+            
+            <h2>My Saved Cards</h2>
+            
+            {% if cards %}
+                {% for card in cards %}
+                <div class="card-item">
+                    <div class="card-info">
+                        <div class="card-number">
+                            {{ card.card_number }}
+                            <span class="card-type">{{ card.card_type }}</span>
+                        </div>
+                        <div class="card-details">
+                            {{ card.card_holder }} • Expires {{ card.expiry }}
+                        </div>
+                    </div>
+                    {% if card.is_default %}
+                    <span style="color: green;">✓ Default</span>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="no-cards">
+                    <p>No saved cards yet.</p>
+                    <a href="/" class="btn">Make a Purchase</a>
+                </div>
+            {% endif %}
+            
+            <div style="text-align: center; margin-top: 30px;">
+                <a href="/" class="btn">Back to Checkout</a>
+            </div>
+        </div>
+    </body>
+    </html>
+    '''
+    
+    try:
+        conn = sqlite3.connect('cards.db')
+        c = conn.cursor()
+        c.execute("""SELECT id, card_holder, card_token, card_type, 
+                            expiry, last_four, is_default 
+                     FROM saved_cards ORDER BY id DESC""")
+        
+        cards = []
+        for row in c.fetchall():
+            cards.append({
+                'id': row[0],
+                'card_holder': row[1],
+                'card_number': row[2],  # This is the token that will be detokenized by proxy
+                'card_type': row[3],
+                'expiry': row[4],
+                'last_four': row[5],
+                'is_default': row[6]
+            })
+        
+        conn.close()
+        
+        logger.info(f"Rendering my-cards page with {len(cards)} cards")
+        return render_template_string(MY_CARDS_TEMPLATE, cards=cards)
+    except Exception as e:
+        logger.error(f"Error displaying cards: {str(e)}")
+        return f"Error: {str(e)}", 500
+
+@app.route('/api/cards', methods=['GET'])
+def list_cards():
+    """
+    API endpoint for listing saved cards - protected by API key
+    This endpoint returns tokens which should be detokenized by the proxy
+    """
+    # Check for API key
+    api_key = request.headers.get('X-API-Key')
+    if api_key != 'demo-api-key-12345':  # In production, use secure key management
+        logger.warning(f"Unauthorized API access attempt with key: {api_key}")
+        return jsonify({'error': 'Unauthorized - API key required'}), 401
+    
+    try:
+        conn = sqlite3.connect('cards.db')
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        # Get all saved cards
+        c.execute("""SELECT id, card_holder, card_token as card_number, 
+                           card_type, expiry, last_four, is_default, created_at
+                    FROM saved_cards 
+                    ORDER BY created_at DESC""")
+        
+        cards = []
+        for row in c.fetchall():
+            cards.append({
+                'id': row['id'],
+                'card_holder': row['card_holder'],
+                'card_number': row['card_number'],  # This is the token
+                'card_type': row['card_type'],
+                'expiry': row['expiry'],
+                'last_four': row['last_four'],
+                'is_default': bool(row['is_default'])
+            })
+        
+        conn.close()
+        
+        logger.info(f"API: Returning {len(cards)} saved cards with tokens")
+        return jsonify({
+            'status': 'success',
+            'cards': cards,
+            'message': 'Tokens will be detokenized by TokenShield for display'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error listing cards via API: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/health', methods=['GET'])
