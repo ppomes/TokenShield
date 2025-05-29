@@ -20,26 +20,27 @@
 ╚═══════════════════════════════════════════════════════════╝
 ```
 
-## ⚠️ **EARLY STAGE PROJECT - NOT PRODUCTION READY** ⚠️
+## ⚠️ **PROTOTYPE - NOT PRODUCTION READY** ⚠️
 
-**This project is in early development stage and should NOT be used in production environments.**
+**This is a prototype implementation for educational and demonstration purposes only.**
 
-- 🚧 **Experimental Implementation**: Core functionality is working but needs extensive testing
-- 🔒 **Security Review Required**: Has not undergone professional security audit
-- 📋 **PCI Compliance**: Implementation requires proper validation for PCI DSS compliance
-- 🧪 **Testing Phase**: Currently suitable for development, testing, and educational purposes only
+- 🚧 **Proof of Concept**: Demonstrates tokenization concepts but lacks production safeguards
+- 🔒 **Security Gaps**: Missing critical security features required for production use
+- 📋 **Not PCI Compliant**: Does not meet PCI DSS requirements as-is
+- 🧪 **Educational Only**: Suitable for learning, testing concepts, and architectural exploration
+- ⚡ **Prototype Quality**: Code quality and error handling not production-grade
 
 ---
 
-**TokenShield** is a complete PCI compliance solution that acts as a secure gateway between your application and sensitive credit card data. Built with a unified Go service architecture, it uses HAProxy for intelligent traffic routing and Squid for secure outbound connections, ensuring your application never touches raw credit card information.
+**TokenShield** is a prototype PCI compliance gateway that demonstrates how to implement credit card tokenization using modern proxy technologies. This proof-of-concept shows how HAProxy and Squid can work together with a unified Go tokenization service to intercept and tokenize sensitive data transparently.
 
-## Key Features
+## Prototype Features
 
-- **Unified Go Service**: Single high-performance binary handling all tokenization operations
-- **Triple Protocol Support**: HTTP (tokenization), ICAP (detokenization), REST API (management)
-- **Zero-Touch Architecture**: Your application never sees real credit card data
-- **Transparent Integration**: Works with existing payment gateways without modification
-- **PCI Scope Reduction**: Moves sensitive data handling outside your application boundary
+- **Unified Go Service**: Demonstrates multi-protocol tokenization in a single binary
+- **Triple Protocol Support**: HTTP (tokenization), ICAP (detokenization), REST API (management)  
+- **Transparent Interception**: Shows how proxies can intercept and modify traffic
+- **Bidirectional Flow**: Tokenizes inbound requests, detokenizes outbound requests
+- **Educational Architecture**: Illustrates concepts for reducing PCI compliance scope
 
 ## Architecture Overview
 
@@ -173,18 +174,18 @@ curl http://localhost:8090/api/v1/stats \
 - **Dummy App**: 8000
 - **Payment Gateway**: 9000
 
-## Security Considerations
+## Missing for Production
 
-⚠️ **This is a demonstration system. For production use:**
+⚠️ **This prototype lacks many critical features required for production:**
 
-1. Use proper SSL certificates (not self-signed)
-2. Implement proper key management (AWS KMS, HashiCorp Vault, etc.)
-3. Add authentication to all endpoints
-4. Implement rate limiting
-5. Add comprehensive logging and monitoring
-6. Follow PCI DSS requirements
-7. Regular security audits
-8. Implement proper network segmentation
+1. **Security**: No authentication, authorization, or input validation
+2. **Key Management**: Uses basic encryption, needs HSM/KMS integration
+3. **Compliance**: Missing PCI DSS controls, logging, and audit requirements
+4. **Error Handling**: Minimal error handling and recovery mechanisms
+5. **Performance**: No load balancing, caching, or optimization
+6. **Monitoring**: Basic logging only, no alerting or health checks
+7. **Data Protection**: No secure key storage or rotation
+8. **Network Security**: Uses self-signed certificates and basic networking
 
 ## Troubleshooting
 
@@ -253,4 +254,4 @@ Make sure to set the required environment variables:
 
 ## License
 
-This is a demonstration project for educational purposes.
+This is a prototype/demonstration project for educational purposes only. Not intended for production use.
