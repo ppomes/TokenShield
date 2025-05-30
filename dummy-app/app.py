@@ -250,6 +250,12 @@ CHECKOUT_TEMPLATE = '''
 @app.route('/')
 def index():
     """Checkout page"""
+    # Log incoming request
+    logger.info(f"[INCOMING REQUEST] GET /")
+    logger.info(f"[INCOMING REQUEST] Headers: {dict(request.headers)}")
+    
+    logger.info(f"[INCOMING RESPONSE] Status: 200")
+    logger.info(f"[INCOMING RESPONSE] Returning HTML checkout page")
     return render_template_string(CHECKOUT_TEMPLATE)
 
 @app.route('/api/checkout', methods=['POST'])
@@ -259,8 +265,11 @@ def checkout():
     In the real world, this endpoint would receive tokenized data from TokenShield
     """
     try:
+        # Log incoming request
+        logger.info(f"[INCOMING REQUEST] POST /api/checkout")
+        logger.info(f"[INCOMING REQUEST] Headers: {dict(request.headers)}")
         data = request.get_json()
-        logger.info(f"Received checkout request: {json.dumps(data, indent=2)}")
+        logger.info(f"[INCOMING REQUEST] Body: {json.dumps(data, indent=2)}")
         
         # Extract payment details
         card_number = data.get('card_number')
@@ -286,7 +295,9 @@ def checkout():
         }
         
         # Send to payment gateway (through Squid proxy with C ICAP for detokenization)
-        logger.info(f"Sending payment request to gateway: {PAYMENT_GATEWAY_URL}/process")
+        logger.info(f"[OUTBOUND REQUEST] POST {PAYMENT_GATEWAY_URL}/process")
+        logger.info(f"[OUTBOUND REQUEST] Body: {json.dumps(payment_request, indent=2)}")
+        logger.info(f"[OUTBOUND REQUEST] Using proxy: {proxies}")
         
         # Use Squid proxy for transparent detokenization via C ICAP server
         response = requests.post(
@@ -295,9 +306,9 @@ def checkout():
             proxies=proxies  # Use Squid proxy with ICAP
         )
         
-        logger.info(f"Gateway response status: {response.status_code}")
-        logger.info(f"Gateway response headers: {dict(response.headers)}")
-        logger.info(f"Gateway response text: {response.text[:500]}")
+        logger.info(f"[OUTBOUND RESPONSE] Status: {response.status_code}")
+        logger.info(f"[OUTBOUND RESPONSE] Headers: {dict(response.headers)}")
+        logger.info(f"[OUTBOUND RESPONSE] Body: {response.text[:500]}")
         
         try:
             gateway_response = response.json()
@@ -305,7 +316,7 @@ def checkout():
             logger.error(f"Failed to parse JSON response: {json_error}")
             logger.error(f"Raw response: {response.text}")
             raise
-        logger.info(f"Gateway response: {json.dumps(gateway_response, indent=2)}")
+        logger.info(f"[OUTBOUND RESPONSE] Parsed JSON: {json.dumps(gateway_response, indent=2)}")
         
         # Save the card if it's tokenized and payment was successful
         if is_tokenized and gateway_response.get('status') == 'success':
@@ -331,20 +342,33 @@ def checkout():
             except Exception as e:
                 logger.error(f"Error saving card: {e}")
         
-        return jsonify({
+        # Prepare response
+        response_data = {
             'status': 'success',
             'transaction_id': gateway_response.get('transaction_id'),
             'token_used': card_number if is_tokenized else 'Card was tokenized by TokenShield',
             'gateway_response': gateway_response
-        }), 200
+        }
+        
+        logger.info(f"[INCOMING RESPONSE] Status: 200")
+        logger.info(f"[INCOMING RESPONSE] Body: {json.dumps(response_data, indent=2)}")
+        
+        return jsonify(response_data), 200
         
     except Exception as e:
         logger.error(f"Error processing checkout: {e}")
-        return jsonify({'error': str(e)}), 500
+        error_response = {'error': str(e)}
+        logger.info(f"[INCOMING RESPONSE] Status: 500")
+        logger.info(f"[INCOMING RESPONSE] Body: {json.dumps(error_response, indent=2)}")
+        return jsonify(error_response), 500
 
 @app.route('/my-cards')
 def my_cards_page():
     """Display saved cards in a web page"""
+    # Log incoming request
+    logger.info(f"[INCOMING REQUEST] GET /my-cards")
+    logger.info(f"[INCOMING REQUEST] Headers: {dict(request.headers)}")
+    
     # In a real app, you would check authentication here
     # For demo purposes, we'll just display the cards
     
@@ -539,9 +563,13 @@ def my_cards_page():
         conn.close()
         
         logger.info(f"Rendering my-cards page with {len(cards)} cards")
+        logger.info(f"[INCOMING RESPONSE] Status: 200")
+        logger.info(f"[INCOMING RESPONSE] Returning HTML page with {len(cards)} cards")
         return render_template_string(MY_CARDS_TEMPLATE, cards=cards)
     except Exception as e:
         logger.error(f"Error displaying cards: {str(e)}")
+        logger.info(f"[INCOMING RESPONSE] Status: 500")
+        logger.info(f"[INCOMING RESPONSE] Error: {str(e)}")
         return f"Error: {str(e)}", 500
 
 @app.route('/api/cards', methods=['GET'])
@@ -551,6 +579,9 @@ def list_cards():
     This endpoint returns tokens which should be detokenized by the proxy
     """
     try:
+        # Log incoming request
+        logger.info(f"[INCOMING REQUEST] GET /api/cards")
+        logger.info(f"[INCOMING REQUEST] Headers: {dict(request.headers)}")
         conn = sqlite3.connect('cards.db')
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
@@ -576,19 +607,31 @@ def list_cards():
         conn.close()
         
         logger.info(f"API: Returning {len(cards)} saved cards with tokens")
-        return jsonify({
+        
+        response_data = {
             'status': 'success',
             'cards': cards,
             'message': 'Tokens will be detokenized by TokenShield for display'
-        }), 200
+        }
+        
+        logger.info(f"[INCOMING RESPONSE] Status: 200")
+        logger.info(f"[INCOMING RESPONSE] Body: {json.dumps(response_data, indent=2)}")
+        
+        return jsonify(response_data), 200
         
     except Exception as e:
         logger.error(f"Error listing cards via API: {e}")
-        return jsonify({'error': str(e)}), 500
+        error_response = {'error': str(e)}
+        logger.info(f"[INCOMING RESPONSE] Status: 500")
+        logger.info(f"[INCOMING RESPONSE] Body: {json.dumps(error_response, indent=2)}")
+        return jsonify(error_response), 500
 
 @app.route('/import-cards')
 def import_cards_page():
     """Web page for importing cards from distributor"""
+    # Log incoming request
+    logger.info(f"[INCOMING REQUEST] GET /import-cards")
+    logger.info(f"[INCOMING REQUEST] Headers: {dict(request.headers)}")
     IMPORT_CARDS_TEMPLATE = '''
     <!DOCTYPE html>
     <html>
@@ -761,6 +804,8 @@ def import_cards_page():
     </html>
     '''
     
+    logger.info(f"[INCOMING RESPONSE] Status: 200")
+    logger.info(f"[INCOMING RESPONSE] Returning HTML page for card import")
     return render_template_string(IMPORT_CARDS_TEMPLATE)
 
 @app.route('/api/import-cards', methods=['POST'])
@@ -770,23 +815,29 @@ def import_cards():
     The response will be tokenized by Squid before reaching this app.
     """
     try:
-        logger.info("Importing cards from distributor API through Squid proxy")
+        # Log incoming request
+        logger.info(f"[INCOMING REQUEST] POST /api/import-cards")
+        logger.info(f"[INCOMING REQUEST] Headers: {dict(request.headers)}")
         
         # Call distributor API through Squid proxy for response tokenization
+        logger.info(f"[OUTBOUND REQUEST] GET {CARD_DISTRIBUTOR_URL}/api/available-cards")
+        logger.info(f"[OUTBOUND REQUEST] Using proxy: {proxies}")
+        
         response = requests.get(
             f"{CARD_DISTRIBUTOR_URL}/api/available-cards",
             proxies=proxies,
             timeout=10
         )
         
-        logger.info(f"Distributor response status: {response.status_code}")
-        logger.info(f"Distributor response headers: {dict(response.headers)}")
+        logger.info(f"[OUTBOUND RESPONSE] Status: {response.status_code}")
+        logger.info(f"[OUTBOUND RESPONSE] Headers: {dict(response.headers)}")
+        logger.info(f"[OUTBOUND RESPONSE] Body: {response.text[:500]}")
         
         if response.status_code != 200:
             raise Exception(f"Distributor API returned status {response.status_code}")
         
         distributor_data = response.json()
-        logger.info(f"Received distributor data: {json.dumps(distributor_data, indent=2)}")
+        logger.info(f"[OUTBOUND RESPONSE] Parsed JSON: {json.dumps(distributor_data, indent=2)}")
         
         # The response should now have tokenized card numbers thanks to Squid
         cards = distributor_data.get('cards', [])
@@ -817,22 +868,37 @@ def import_cards():
         conn.commit()
         conn.close()
         
-        return jsonify({
+        # Prepare response
+        response_data = {
             'status': 'success',
             'imported_count': imported_count,
             'total_available': len(cards),
             'message': f'Successfully imported {imported_count} cards from distributor',
             'note': 'Card numbers were tokenized by TokenShield during response interception'
-        })
+        }
+        
+        logger.info(f"[INCOMING RESPONSE] Status: 200")
+        logger.info(f"[INCOMING RESPONSE] Body: {json.dumps(response_data, indent=2)}")
+        
+        return jsonify(response_data)
         
     except Exception as e:
         logger.error(f"Error importing cards: {e}")
-        return jsonify({'error': str(e)}), 500
+        error_response = {'error': str(e)}
+        logger.info(f"[INCOMING RESPONSE] Status: 500")
+        logger.info(f"[INCOMING RESPONSE] Body: {json.dumps(error_response, indent=2)}")
+        return jsonify(error_response), 500
 
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'service': 'dummy-app'}), 200
+    logger.info(f"[INCOMING REQUEST] GET /health")
+    logger.info(f"[INCOMING REQUEST] Headers: {dict(request.headers)}")
+    
+    response_data = {'status': 'healthy', 'service': 'dummy-app'}
+    logger.info(f"[INCOMING RESPONSE] Status: 200")
+    logger.info(f"[INCOMING RESPONSE] Body: {json.dumps(response_data, indent=2)}")
+    return jsonify(response_data), 200
 
 if __name__ == '__main__':
     # Disable SSL warnings for demo
