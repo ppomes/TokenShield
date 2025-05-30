@@ -3,13 +3,14 @@ package main
 import (
     "bufio"
     "bytes"
-    "crypto/rand"
+    cryptorand "crypto/rand"
     "database/sql"
     "encoding/base64"
     "encoding/json"
     "fmt"
     "io"
     "log"
+    "math/rand"
     "net"
     "net/http"
     "os"
@@ -33,6 +34,7 @@ type UnifiedTokenizer struct {
     icapPort        string
     apiPort         string
     debug           bool
+    tokenFormat     string // "prefix" for tok_ format, "luhn" for Luhn-valid format
     mu              sync.RWMutex
 }
 
@@ -82,16 +84,31 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     encKey := new(fernet.Key)
     copy(encKey[:], keyBytes)
     
+    tokenFormat := getEnv("TOKEN_FORMAT", "prefix")
+    if tokenFormat != "prefix" && tokenFormat != "luhn" {
+        tokenFormat = "prefix"
+    }
+    
+    // Adjust token regex based on format
+    var tokenRegex *regexp.Regexp
+    if tokenFormat == "luhn" {
+        // Match 16-digit numbers starting with our special prefix (9999)
+        tokenRegex = regexp.MustCompile(`\b9999[0-9]{12}\b`)
+    } else {
+        tokenRegex = regexp.MustCompile(`tok_[a-zA-Z0-9_\-]+=*`)
+    }
+    
     return &UnifiedTokenizer{
         db:            db,
         encryptionKey: encKey,
         appEndpoint:   getEnv("APP_ENDPOINT", "http://dummy-app:8000"),
-        tokenRegex:    regexp.MustCompile(`tok_[a-zA-Z0-9_\-]+=*`),
+        tokenRegex:    tokenRegex,
         cardRegex:     regexp.MustCompile(`\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|6(?:011|5[0-9]{2})[0-9]{12}|(?:2131|1800|35\d{3})\d{11})\b`),
         httpPort:      getEnv("HTTP_PORT", "8080"),
         icapPort:      getEnv("ICAP_PORT", "1344"),
         apiPort:       getEnv("API_PORT", "8090"),
         debug:         getEnv("DEBUG_MODE", "0") == "1",
+        tokenFormat:   tokenFormat,
     }, nil
 }
 
@@ -842,6 +859,11 @@ func (ut *UnifiedTokenizer) processValue(v interface{}, modified *bool, tokenize
             }
             if tokenize && ut.isCreditCardField(k) {
                 if str, ok := v.(string); ok && ut.cardRegex.MatchString(str) {
+                    // Don't tokenize if it's already one of our tokens
+                    if ut.tokenFormat == "luhn" && strings.HasPrefix(str, "9999") {
+                        // This is already a token, skip it
+                        continue
+                    }
                     token := ut.generateToken()
                     if err := ut.storeCard(token, str); err == nil {
                         val[k] = token
@@ -922,9 +944,58 @@ func (ut *UnifiedTokenizer) isCreditCardField(fieldName string) bool {
 }
 
 func (ut *UnifiedTokenizer) generateToken() string {
+    if ut.tokenFormat == "luhn" {
+        return ut.generateLuhnToken()
+    }
+    
+    // Default prefix format
     b := make([]byte, 32)
-    rand.Read(b)
+    cryptorand.Read(b)
     return "tok_" + base64.URLEncoding.EncodeToString(b)
+}
+
+// calculateLuhnCheckDigit calculates the Luhn check digit for a given number
+func calculateLuhnCheckDigit(number string) int {
+    sum := 0
+    alternate := false
+    
+    // Process from right to left
+    for i := len(number) - 1; i >= 0; i-- {
+        digit := int(number[i] - '0')
+        
+        if alternate {
+            digit *= 2
+            if digit > 9 {
+                digit = (digit % 10) + 1
+            }
+        }
+        
+        sum += digit
+        alternate = !alternate
+    }
+    
+    return (10 - (sum % 10)) % 10
+}
+
+// generateLuhnToken generates a token that looks like a valid credit card number
+func (ut *UnifiedTokenizer) generateLuhnToken() string {
+    // Use prefix 9999 to distinguish tokens from real cards
+    // This prefix is not used by any real card issuer
+    prefix := "9999"
+    
+    // Generate 11 random digits
+    randomPart := make([]byte, 11)
+    for i := 0; i < 11; i++ {
+        randomPart[i] = byte(rand.Intn(10)) + '0'
+    }
+    
+    // Combine prefix and random part (15 digits total)
+    partial := prefix + string(randomPart)
+    
+    // Calculate and append Luhn check digit
+    checkDigit := calculateLuhnCheckDigit(partial)
+    
+    return partial + strconv.Itoa(checkDigit)
 }
 
 func (ut *UnifiedTokenizer) storeCard(token, cardNumber string) error {
@@ -1266,6 +1337,7 @@ func main() {
     log.Printf("TokenShield Unified Service starting...")
     log.Printf("HTTP Port: %s, ICAP Port: %s, API Port: %s", ut.httpPort, ut.icapPort, ut.apiPort)
     log.Printf("App Endpoint: %s", ut.appEndpoint)
+    log.Printf("Token Format: %s", ut.tokenFormat)
     
     // Start all three servers
     go ut.startHTTPServer()

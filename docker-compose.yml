@@ -37,6 +37,7 @@ services:
       HTTP_PORT: 8080
       ICAP_PORT: 1344
       DEBUG_MODE: "1"
+      TOKEN_FORMAT: ${TOKEN_FORMAT:-prefix}  # "prefix" for tok_ format, "luhn" for Luhn-valid format
     depends_on:
       mysql:
         condition: service_healthy

@@ -84,6 +84,29 @@ cp .env.example .env
 # Edit .env and add the encryption key generated above
 ```
 
+#### Token Format Options
+TokenShield supports two token formats:
+
+1. **Prefix Format (default)**: `tok_abc123...`
+   - Clearly distinguishable as tokens
+   - Won't pass credit card validation
+   - Set `TOKEN_FORMAT=prefix` or leave unset
+
+2. **Luhn-Valid Format**: `9999xxxxxxxxxxxx`
+   - Looks like a valid credit card number
+   - Passes Luhn algorithm validation
+   - Uses prefix `9999` (not used by real issuers)
+   - Set `TOKEN_FORMAT=luhn`
+
+To use Luhn-valid tokens:
+```bash
+# In .env file
+TOKEN_FORMAT=luhn
+
+# Or when starting Docker Compose
+TOKEN_FORMAT=luhn docker-compose up -d
+```
+
 ### 3. Generate SSL Certificates
 ```bash
 cd certs

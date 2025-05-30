@@ -280,7 +280,7 @@ def checkout():
         
         # Log what we received (in real app, NEVER log card numbers!)
         # Check if we received a token or actual card number
-        is_tokenized = card_number.startswith('tok_') if card_number else False
+        is_tokenized = (card_number.startswith('tok_') or card_number.startswith('9999')) if card_number else False
         logger.info(f"Received {'tokenized' if is_tokenized else 'raw'} card data")
         
         # Prepare payment request for gateway
