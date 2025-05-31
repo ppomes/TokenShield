@@ -1029,10 +1029,74 @@ func (ut *UnifiedTokenizer) generateLuhnToken() string {
     return partial + strconv.Itoa(checkDigit)
 }
 
+// Detect card type based on card number
+func detectCardType(cardNumber string) string {
+    if len(cardNumber) < 4 {
+        return "Unknown"
+    }
+    
+    // Remove any spaces or dashes
+    cardNumber = strings.ReplaceAll(strings.ReplaceAll(cardNumber, " ", ""), "-", "")
+    
+    // Visa: starts with 4
+    if strings.HasPrefix(cardNumber, "4") && (len(cardNumber) == 13 || len(cardNumber) == 16 || len(cardNumber) == 19) {
+        return "Visa"
+    }
+    
+    // Mastercard: starts with 5 (51-55) or 2 (2221-2720)
+    if len(cardNumber) >= 2 {
+        prefix2 := cardNumber[:2]
+        if (prefix2 >= "51" && prefix2 <= "55") || (prefix2 >= "22" && prefix2 <= "27") {
+            if len(cardNumber) == 16 {
+                return "Mastercard"
+            }
+        }
+    }
+    
+    // American Express: starts with 34 or 37
+    if len(cardNumber) >= 2 {
+        prefix2 := cardNumber[:2]
+        if (prefix2 == "34" || prefix2 == "37") && len(cardNumber) == 15 {
+            return "Amex"
+        }
+    }
+    
+    // Discover: starts with 6011, 622126-622925, 644-649, or 65
+    if len(cardNumber) >= 4 {
+        prefix4 := cardNumber[:4]
+        prefix2 := cardNumber[:2]
+        prefix3 := cardNumber[:3]
+        
+        if prefix4 == "6011" || prefix2 == "65" {
+            if len(cardNumber) == 16 {
+                return "Discover"
+            }
+        }
+        
+        if len(cardNumber) >= 6 {
+            prefix6 := cardNumber[:6]
+            if prefix6 >= "622126" && prefix6 <= "622925" {
+                return "Discover"
+            }
+        }
+        
+        if prefix3 >= "644" && prefix3 <= "649" {
+            if len(cardNumber) == 16 {
+                return "Discover"
+            }
+        }
+    }
+    
+    return "Unknown"
+}
+
 func (ut *UnifiedTokenizer) storeCard(token, cardNumber string) error {
     var encrypted []byte
     var keyID string
     var err error
+    
+    // Detect card type
+    cardType := detectCardType(cardNumber)
     
     if ut.useKEKDEK && ut.keyManager != nil {
         // Use KEK/DEK encryption
@@ -1050,16 +1114,16 @@ func (ut *UnifiedTokenizer) storeCard(token, cardNumber string) error {
     
     if ut.useKEKDEK && keyID != "" {
         _, err = ut.db.Exec(`
-            INSERT INTO credit_cards (token, card_number_encrypted, last_four_digits, first_six_digits, 
+            INSERT INTO credit_cards (token, card_number_encrypted, card_type, last_four_digits, first_six_digits, 
                                      expiry_month, expiry_year, created_at, is_active, encryption_key_id)
-            VALUES (?, ?, ?, ?, 12, 2025, NOW(), TRUE, ?)
-        `, token, encrypted, cardNumber[len(cardNumber)-4:], cardNumber[:6], keyID)
+            VALUES (?, ?, ?, ?, ?, 12, 2025, NOW(), TRUE, ?)
+        `, token, encrypted, cardType, cardNumber[len(cardNumber)-4:], cardNumber[:6], keyID)
     } else {
         _, err = ut.db.Exec(`
-            INSERT INTO credit_cards (token, card_number_encrypted, last_four_digits, first_six_digits, 
+            INSERT INTO credit_cards (token, card_number_encrypted, card_type, last_four_digits, first_six_digits, 
                                      expiry_month, expiry_year, created_at, is_active)
-            VALUES (?, ?, ?, ?, 12, 2025, NOW(), TRUE)
-        `, token, encrypted, cardNumber[len(cardNumber)-4:], cardNumber[:6])
+            VALUES (?, ?, ?, ?, ?, 12, 2025, NOW(), TRUE)
+        `, token, encrypted, cardType, cardNumber[len(cardNumber)-4:], cardNumber[:6])
     }
     
     if err == nil {
