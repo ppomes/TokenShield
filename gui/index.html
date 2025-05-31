@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TokenShield Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <i class="fas fa-shield-alt"></i>
+            <span>TokenShield Dashboard</span>
+        </div>
+        <div class="nav-links">
+            <a href="#dashboard" class="nav-link active" data-section="dashboard">
+                <i class="fas fa-tachometer-alt"></i> Dashboard
+            </a>
+            <a href="#tokens" class="nav-link" data-section="tokens">
+                <i class="fas fa-credit-card"></i> Tokens
+            </a>
+            <a href="#apikeys" class="nav-link" data-section="apikeys">
+                <i class="fas fa-key"></i> API Keys
+            </a>
+            <a href="#activity" class="nav-link" data-section="activity">
+                <i class="fas fa-chart-line"></i> Activity
+            </a>
+            <a href="#settings" class="nav-link" data-section="settings">
+                <i class="fas fa-cog"></i> Settings
+            </a>
+        </div>
+        <div class="nav-user">
+            <span id="connection-status" class="status-indicator offline">
+                <i class="fas fa-circle"></i> Disconnected
+            </span>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        <!-- Dashboard Section -->
+        <section id="dashboard-section" class="content-section active">
+            <div class="section-header">
+                <h1>Dashboard</h1>
+                <p>Overview of TokenShield system status and statistics</p>
+            </div>
+            
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon">
+                        <i class="fas fa-credit-card"></i>
+                    </div>
+                    <div class="stat-content">
+                        <h3 id="total-tokens">-</h3>
+                        <p>Active Tokens</p>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-icon">
+                        <i class="fas fa-exchange-alt"></i>
+                    </div>
+                    <div class="stat-content">
+                        <h3 id="requests-24h">-</h3>
+                        <p>Requests (24h)</p>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-icon">
+                        <i class="fas fa-key"></i>
+                    </div>
+                    <div class="stat-content">
+                        <h3 id="api-keys-count">-</h3>
+                        <p>API Keys</p>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-icon">
+                        <i class="fas fa-server"></i>
+                    </div>
+                    <div class="stat-content">
+                        <h3 id="system-status">-</h3>
+                        <p>System Status</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dashboard-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Recent Activity</h3>
+                        <button class="btn btn-sm" onclick="refreshActivity()">
+                            <i class="fas fa-refresh"></i>
+                        </button>
+                    </div>
+                    <div class="card-content">
+                        <div id="recent-activity" class="activity-list">
+                            <div class="loading">Loading activity...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>System Information</h3>
+                    </div>
+                    <div class="card-content">
+                        <div id="system-info" class="info-list">
+                            <div class="loading">Loading system info...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tokens Section -->
+        <section id="tokens-section" class="content-section">
+            <div class="section-header">
+                <h1>Token Management</h1>
+                <p>View and manage credit card tokens</p>
+            </div>
+            
+            <div class="controls-bar">
+                <div class="search-controls">
+                    <input type="text" id="token-search" placeholder="Search by last 4 digits..." class="search-input">
+                    <select id="card-type-filter" class="filter-select">
+                        <option value="">All Card Types</option>
+                        <option value="Visa">Visa</option>
+                        <option value="Mastercard">Mastercard</option>
+                        <option value="Amex">American Express</option>
+                        <option value="Discover">Discover</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="searchTokens()">
+                        <i class="fas fa-search"></i> Search
+                    </button>
+                </div>
+                <div class="action-controls">
+                    <button class="btn btn-secondary" onclick="refreshTokens()">
+                        <i class="fas fa-refresh"></i> Refresh
+                    </button>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-content">
+                    <div id="tokens-table" class="table-container">
+                        <div class="loading">Loading tokens...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- API Keys Section -->
+        <section id="apikeys-section" class="content-section">
+            <div class="section-header">
+                <h1>API Key Management</h1>
+                <p>Manage API keys for accessing TokenShield</p>
+            </div>
+            
+            <div class="controls-bar">
+                <div class="action-controls">
+                    <button class="btn btn-primary" onclick="showCreateAPIKeyModal()">
+                        <i class="fas fa-plus"></i> Create API Key
+                    </button>
+                    <button class="btn btn-secondary" onclick="refreshAPIKeys()">
+                        <i class="fas fa-refresh"></i> Refresh
+                    </button>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-content">
+                    <div id="apikeys-table" class="table-container">
+                        <div class="loading">Loading API keys...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Activity Section -->
+        <section id="activity-section" class="content-section">
+            <div class="section-header">
+                <h1>Activity Monitoring</h1>
+                <p>Monitor system activity and token usage</p>
+            </div>
+            
+            <div class="controls-bar">
+                <div class="filter-controls">
+                    <select id="activity-limit" class="filter-select">
+                        <option value="50">Last 50 entries</option>
+                        <option value="100">Last 100 entries</option>
+                        <option value="200">Last 200 entries</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="refreshActivityFull()">
+                        <i class="fas fa-search"></i> Load
+                    </button>
+                </div>
+                <div class="action-controls">
+                    <button class="btn btn-secondary" onclick="refreshActivityFull()">
+                        <i class="fas fa-refresh"></i> Refresh
+                    </button>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-content">
+                    <div id="activity-table" class="table-container">
+                        <div class="loading">Loading activity...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Settings Section -->
+        <section id="settings-section" class="content-section">
+            <div class="section-header">
+                <h1>Settings</h1>
+                <p>Configure TokenShield dashboard settings</p>
+            </div>
+            
+            <div class="settings-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>API Configuration</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="form-group">
+                            <label for="api-url">API URL</label>
+                            <input type="text" id="api-url" class="form-input" placeholder="http://localhost:8090">
+                        </div>
+                        <div class="form-group">
+                            <label for="api-key">API Key</label>
+                            <input type="password" id="api-key" class="form-input" placeholder="ts_your-api-key">
+                        </div>
+                        <div class="form-group">
+                            <label for="admin-secret">Admin Secret</label>
+                            <input type="password" id="admin-secret" class="form-input" placeholder="admin-secret">
+                        </div>
+                        <div class="form-actions">
+                            <button class="btn btn-primary" onclick="saveSettings()">
+                                <i class="fas fa-save"></i> Save Settings
+                            </button>
+                            <button class="btn btn-secondary" onclick="testConnection()">
+                                <i class="fas fa-plug"></i> Test Connection
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Dashboard Settings</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="form-group">
+                            <label for="refresh-interval">Auto Refresh (seconds)</label>
+                            <select id="refresh-interval" class="form-select">
+                                <option value="0">Disabled</option>
+                                <option value="30">30 seconds</option>
+                                <option value="60">1 minute</option>
+                                <option value="300">5 minutes</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="items-per-page">Items per page</label>
+                            <select id="items-per-page" class="form-select">
+                                <option value="25">25</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Modal for creating API keys -->
+    <div id="create-apikey-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Create API Key</h3>
+                <button class="modal-close" onclick="hideCreateAPIKeyModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="new-client-name">Client Name</label>
+                    <input type="text" id="new-client-name" class="form-input" placeholder="My Application">
+                </div>
+                <div class="form-group">
+                    <label>Permissions</label>
+                    <div class="checkbox-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" value="read" checked> Read
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" value="write" checked> Write
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" value="admin"> Admin
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="hideCreateAPIKeyModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="createAPIKey()">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast notifications -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>

@@ -131,6 +131,18 @@ services:
       - tokenshield-net
     restart: unless-stopped
 
+  # TokenShield GUI Dashboard
+  tokenshield-gui:
+    build: ./gui
+    container_name: tokenshield-gui
+    ports:
+      - "8081:80"
+    networks:
+      - tokenshield-net
+    depends_on:
+      - unified-tokenizer
+    restart: unless-stopped
+
 networks:
   tokenshield-net:
     driver: bridge

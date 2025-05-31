@@ -1671,6 +1671,25 @@ func (ut *UnifiedTokenizer) startHTTPServer() {
     }
 }
 
+// CORS middleware
+func (ut *UnifiedTokenizer) corsMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // Set CORS headers
+        w.Header().Set("Access-Control-Allow-Origin", "*")
+        w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, X-Admin-Secret, Authorization")
+        w.Header().Set("Access-Control-Max-Age", "3600")
+        
+        // Handle preflight OPTIONS requests
+        if r.Method == "OPTIONS" {
+            w.WriteHeader(http.StatusOK)
+            return
+        }
+        
+        next.ServeHTTP(w, r)
+    })
+}
+
 func (ut *UnifiedTokenizer) startAPIServer() {
     mux := http.NewServeMux()
     
@@ -1760,8 +1779,8 @@ func (ut *UnifiedTokenizer) startAPIServer() {
         })
     }
     
-    log.Printf("Starting API server on port %s", ut.apiPort)
-    if err := http.ListenAndServe(":"+ut.apiPort, mux); err != nil {
+    log.Printf("Starting API server on port %s with CORS enabled", ut.apiPort)
+    if err := http.ListenAndServe(":"+ut.apiPort, ut.corsMiddleware(mux)); err != nil {
         log.Fatalf("API server failed: %v", err)
     }
 }
