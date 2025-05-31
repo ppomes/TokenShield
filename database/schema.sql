@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
 CREATE TABLE IF NOT EXISTS key_rotation_log (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     rotation_id VARCHAR(64) UNIQUE NOT NULL,
+    key_type VARCHAR(10) DEFAULT 'DEK' COMMENT 'Type of key being rotated: KEK or DEK',
     old_key_id VARCHAR(64),
     new_key_id VARCHAR(64),
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

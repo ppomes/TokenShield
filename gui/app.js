@@ -62,6 +62,9 @@ class TokenShieldDashboard {
             case 'activity':
                 await this.loadActivity();
                 break;
+            case 'keys':
+                await this.loadKeys();
+                break;
             case 'settings':
                 this.loadSettings();
                 break;
@@ -83,6 +86,9 @@ class TokenShieldDashboard {
             headers['X-Admin-Secret'] = this.config.adminSecret;
         }
 
+        console.log('Making API request to:', url);
+        console.log('Headers:', headers);
+
         try {
             const response = await fetch(url, {
                 ...options,
@@ -93,7 +99,9 @@ class TokenShieldDashboard {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
 
-            return await response.json();
+            const data = await response.json();
+            console.log('API Response:', data);
+            return data;
         } catch (error) {
             console.error('API Request failed:', error);
             this.showToast('API Error', error.message, 'error');
@@ -531,6 +539,219 @@ class TokenShieldDashboard {
         }
     }
 
+    async loadKeys() {
+        console.log('loadKeys called');
+        try {
+            await this.loadKeyStatus();
+            console.log('loadKeyStatus completed, calling loadRotationHistory');
+            await this.loadRotationHistory();
+            console.log('loadRotationHistory completed');
+        } catch (error) {
+            console.error('Error in loadKeys:', error);
+        }
+    }
+
+    async loadKeyStatus() {
+        const container = document.getElementById('key-status');
+        const statusBadge = document.getElementById('kek-dek-status');
+        
+        container.innerHTML = '<div class="loading">Loading key status...</div>';
+        statusBadge.textContent = 'KEK/DEK Status: Loading...';
+        
+        try {
+            // Check if KEK/DEK is enabled first
+            const versionData = await this.makeAPIRequest('/api/v1/version');
+            
+            if (!versionData.kek_dek_enabled) {
+                console.log('KEK/DEK is disabled, returning early');
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-info-circle"></i>
+                        <h3>KEK/DEK Not Enabled</h3>
+                        <p>KEK/DEK encryption is not enabled on this system. Key rotation is only available when KEK/DEK encryption is active.</p>
+                    </div>
+                `;
+                statusBadge.className = 'status-badge warning';
+                statusBadge.textContent = 'KEK/DEK Status: Disabled';
+                return;
+            }
+            console.log('KEK/DEK is enabled, continuing...');
+            
+            const data = await this.makeAPIRequest('/api/v1/keys/status');
+            this.renderKeyStatus(data);
+            
+            statusBadge.className = 'status-badge active';
+            statusBadge.textContent = 'KEK/DEK Status: Enabled';
+            
+        } catch (error) {
+            container.innerHTML = '<div class="empty-state">Unable to load key status</div>';
+            statusBadge.className = 'status-badge inactive';
+            statusBadge.textContent = 'KEK/DEK Status: Error';
+        }
+    }
+
+    renderKeyStatus(data) {
+        const container = document.getElementById('key-status');
+        
+        if (!data.kek && !data.dek) {
+            container.innerHTML = '<div class="empty-state">No encryption keys found</div>';
+            return;
+        }
+
+        container.innerHTML = `
+            <div class="key-info">
+                ${data.kek ? `
+                    <div class="key-card">
+                        <h4>KEK (Key Encryption Key)</h4>
+                        <div class="key-detail">
+                            <span>Key ID:</span>
+                            <span class="font-mono">${this.truncateToken(data.kek.key_id)}</span>
+                        </div>
+                        <div class="key-detail">
+                            <span>Version:</span>
+                            <span>${data.kek.version}</span>
+                        </div>
+                        <div class="key-detail">
+                            <span>Status:</span>
+                            <span class="status-badge ${data.kek.status}">${this.capitalizeFirst(data.kek.status)}</span>
+                        </div>
+                        <div class="key-detail">
+                            <span>Created:</span>
+                            <span>${this.formatTimestamp(data.kek.created_at)}</span>
+                        </div>
+                    </div>
+                ` : '<div class="key-card"><h4>KEK</h4><p>No KEK found</p></div>'}
+                
+                ${data.dek ? `
+                    <div class="key-card">
+                        <h4>DEK (Data Encryption Key)</h4>
+                        <div class="key-detail">
+                            <span>Key ID:</span>
+                            <span class="font-mono">${this.truncateToken(data.dek.key_id)}</span>
+                        </div>
+                        <div class="key-detail">
+                            <span>Version:</span>
+                            <span>${data.dek.version}</span>
+                        </div>
+                        <div class="key-detail">
+                            <span>Status:</span>
+                            <span class="status-badge ${data.dek.status}">${this.capitalizeFirst(data.dek.status)}</span>
+                        </div>
+                        <div class="key-detail">
+                            <span>Created:</span>
+                            <span>${this.formatTimestamp(data.dek.created_at)}</span>
+                        </div>
+                        ${data.dek.cards_encrypted ? `
+                            <div class="key-detail">
+                                <span>Cards Encrypted:</span>
+                                <span>${data.dek.cards_encrypted}</span>
+                            </div>
+                        ` : ''}
+                    </div>
+                ` : '<div class="key-card"><h4>DEK</h4><p>No DEK found</p></div>'}
+            </div>
+        `;
+    }
+
+    async loadRotationHistory() {
+        const container = document.getElementById('rotation-history');
+        container.innerHTML = '<div class="loading">Loading rotation history...</div>';
+        
+        try {
+            const data = await this.makeAPIRequest('/api/v1/keys/rotations?limit=20');
+            console.log('Rotation history data:', data);
+            
+            if (!data.rotations || data.rotations.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-history"></i>
+                        <h3>No Rotation History</h3>
+                        <p>Key rotation history will appear here after rotations are performed.</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = `
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Rotation ID</th>
+                            <th>Key Type</th>
+                            <th>Status</th>
+                            <th>Started</th>
+                            <th>Duration</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${data.rotations.map(rotation => `
+                            <tr>
+                                <td><span class="font-mono text-sm">${this.truncateToken(rotation.rotation_id)}</span></td>
+                                <td><span class="status-badge">${rotation.key_type}</span></td>
+                                <td><span class="rotation-status ${rotation.status}">
+                                    <i class="fas fa-${rotation.status === 'completed' ? 'check-circle' : rotation.status === 'failed' ? 'times-circle' : 'spinner fa-spin'}"></i>
+                                    ${this.capitalizeFirst(rotation.status)}
+                                </span></td>
+                                <td>${this.formatTimestamp(rotation.started_at)}</td>
+                                <td>${rotation.duration_ms ? `${rotation.duration_ms}ms` : '-'}</td>
+                            </tr>
+                            ${rotation.error_message ? `
+                                <tr>
+                                    <td colspan="5" class="text-sm" style="color: var(--error-color); padding-left: 2rem;">
+                                        Error: ${rotation.error_message}
+                                    </td>
+                                </tr>
+                            ` : ''}
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+            
+        } catch (error) {
+            container.innerHTML = '<div class="empty-state">Unable to load rotation history</div>';
+        }
+    }
+
+    async rotateKeys() {
+        const rotationType = document.getElementById('rotation-type').value;
+        const rotateBtn = document.getElementById('rotate-btn');
+        
+        // Confirm the operation
+        if (!confirm(`Are you sure you want to rotate ${rotationType === 'both' ? 'both KEK and DEK' : rotationType}? This is a critical operation that cannot be undone.`)) {
+            return;
+        }
+        
+        // Disable button and show loading state
+        rotateBtn.disabled = true;
+        rotateBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rotating...';
+        
+        try {
+            const response = await this.makeAPIRequest('/api/v1/keys/rotate', {
+                method: 'POST',
+                body: JSON.stringify({
+                    key_type: rotationType
+                })
+            });
+            
+            if (response.status === 'completed') {
+                this.showToast('Success', `Key rotation completed successfully. Rotated: ${response.rotated_keys.join(', ')}`, 'success');
+            } else {
+                this.showToast('Warning', `Key rotation finished with issues: ${response.errors ? response.errors.join(', ') : 'Unknown error'}`, 'warning');
+            }
+            
+            // Refresh key status and rotation history
+            await this.loadKeyStatus();
+            await this.loadRotationHistory();
+            
+        } catch (error) {
+            this.showToast('Error', `Key rotation failed: ${error.message}`, 'error');
+        } finally {
+            // Re-enable button
+            rotateBtn.disabled = false;
+            rotateBtn.innerHTML = '<i class="fas fa-sync-alt"></i> Rotate Keys';
+        }
+    }
+
     setAutoRefresh(seconds) {
         if (this.refreshInterval) {
             clearInterval(this.refreshInterval);
@@ -591,6 +812,8 @@ function hideCreateAPIKeyModal() { dashboard.hideCreateAPIKeyModal(); }
 function createAPIKey() { dashboard.createAPIKey(); }
 function saveSettings() { dashboard.saveSettings(); }
 function testConnection() { dashboard.testConnection(); }
+function refreshKeyStatus() { dashboard.loadKeyStatus(); }
+function rotateKeys() { dashboard.rotateKeys(); }
 
 // Initialize dashboard when page loads
 let dashboard;

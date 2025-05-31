@@ -26,6 +26,9 @@
             <a href="#activity" class="nav-link" data-section="activity">
                 <i class="fas fa-chart-line"></i> Activity
             </a>
+            <a href="#keys" class="nav-link" data-section="keys">
+                <i class="fas fa-shield-alt"></i> Key Management
+            </a>
             <a href="#settings" class="nav-link" data-section="settings">
                 <i class="fas fa-cog"></i> Settings
             </a>
@@ -208,6 +211,82 @@
                 <div class="card-content">
                     <div id="activity-table" class="table-container">
                         <div class="loading">Loading activity...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Key Management Section -->
+        <section id="keys-section" class="content-section">
+            <div class="section-header">
+                <h1>Key Management</h1>
+                <p>Manage encryption keys and perform key rotation</p>
+            </div>
+            
+            <div class="controls-bar">
+                <div class="filter-controls">
+                    <span class="status-badge" id="kek-dek-status">KEK/DEK Status: Unknown</span>
+                </div>
+                <div class="action-controls">
+                    <button class="btn btn-secondary" onclick="refreshKeyStatus()">
+                        <i class="fas fa-refresh"></i> Refresh Status
+                    </button>
+                </div>
+            </div>
+
+            <div class="dashboard-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Key Status</h3>
+                        <button class="btn btn-sm" onclick="refreshKeyStatus()">
+                            <i class="fas fa-refresh"></i>
+                        </button>
+                    </div>
+                    <div class="card-content">
+                        <div id="key-status" class="info-list">
+                            <div class="loading">Loading key status...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Key Rotation</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="form-group">
+                            <label for="rotation-type">Rotation Type</label>
+                            <select id="rotation-type" class="form-select">
+                                <option value="DEK">Rotate DEK (Data Encryption Key)</option>
+                                <option value="KEK">Rotate KEK (Key Encryption Key)</option>
+                                <option value="both">Rotate Both KEK and DEK</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <div class="warning-box">
+                                <i class="fas fa-exclamation-triangle"></i>
+                                <strong>Warning:</strong> Key rotation is a critical operation. 
+                                Ensure you have proper backups before proceeding.
+                            </div>
+                        </div>
+                        
+                        <div class="form-actions">
+                            <button class="btn btn-warning" onclick="rotateKeys()" id="rotate-btn">
+                                <i class="fas fa-sync-alt"></i> Rotate Keys
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3>Recent Rotations</h3>
+                </div>
+                <div class="card-content">
+                    <div id="rotation-history" class="table-container">
+                        <div class="loading">Loading rotation history...</div>
                     </div>
                 </div>
             </div>

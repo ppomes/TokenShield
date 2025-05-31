@@ -48,6 +48,7 @@ type KeyManager struct {
     db           *sql.DB
     kekCache     map[string][]byte
     dekCache     map[string][]byte
+    currentKEKID string
     currentDEKID string
     mu           sync.RWMutex
 }
@@ -1841,6 +1842,14 @@ func (ut *UnifiedTokenizer) startAPIServer() {
                 w.WriteHeader(http.StatusMethodNotAllowed)
             }
         })
+        
+        mux.HandleFunc("/api/v1/keys/rotations", func(w http.ResponseWriter, r *http.Request) {
+            if r.Method == "GET" {
+                ut.handleKeyRotationHistory(w, r)
+            } else {
+                w.WriteHeader(http.StatusMethodNotAllowed)
+            }
+        })
     }
     
     log.Printf("Starting API server on port %s with CORS enabled", ut.apiPort)
@@ -1914,16 +1923,167 @@ func (ut *UnifiedTokenizer) handleKeyRotation(w http.ResponseWriter, r *http.Req
         return
     }
     
-    // For prototype, just return a message
-    // In production, this would trigger the key rotation process
+    // Check if KEK/DEK is enabled
+    if !ut.useKEKDEK || ut.keyManager == nil {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{
+            "error": "KEK/DEK encryption is not enabled",
+        })
+        return
+    }
+    
+    // Parse request body for rotation type
+    var request struct {
+        KeyType string `json:"key_type"` // "KEK", "DEK", or "both"
+    }
+    
+    if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+        request.KeyType = "DEK" // Default to DEK rotation
+    }
+    
+    rotationID := "rot_" + generateRandomID()
+    
+    // Log rotation attempt
+    _, err := ut.db.Exec(`
+        INSERT INTO key_rotation_log (rotation_id, key_type, status, started_at)
+        VALUES (?, ?, 'in_progress', NOW())
+    `, rotationID, request.KeyType)
+    
+    if err != nil {
+        log.Printf("Failed to log rotation start: %v", err)
+    }
+    
+    var rotatedKeys []string
+    var errors []string
+    
+    // Perform rotation based on type
+    switch request.KeyType {
+    case "KEK":
+        if err := ut.keyManager.RotateKEK(); err != nil {
+            errors = append(errors, fmt.Sprintf("KEK rotation failed: %v", err))
+        } else {
+            rotatedKeys = append(rotatedKeys, "KEK")
+        }
+    case "both":
+        if err := ut.keyManager.RotateKEK(); err != nil {
+            errors = append(errors, fmt.Sprintf("KEK rotation failed: %v", err))
+        } else {
+            rotatedKeys = append(rotatedKeys, "KEK")
+        }
+        if err := ut.keyManager.RotateDEK(); err != nil {
+            errors = append(errors, fmt.Sprintf("DEK rotation failed: %v", err))
+        } else {
+            rotatedKeys = append(rotatedKeys, "DEK")
+        }
+    default: // "DEK" or any other value
+        if err := ut.keyManager.RotateDEK(); err != nil {
+            errors = append(errors, fmt.Sprintf("DEK rotation failed: %v", err))
+        } else {
+            rotatedKeys = append(rotatedKeys, "DEK")
+        }
+    }
+    
+    // Update rotation log
+    status := "completed"
+    if len(errors) > 0 {
+        status = "failed"
+    }
+    
+    _, err = ut.db.Exec(`
+        UPDATE key_rotation_log 
+        SET status = ?, completed_at = NOW(), error_message = ?
+        WHERE rotation_id = ?
+    `, status, strings.Join(errors, "; "), rotationID)
+    
+    if err != nil {
+        log.Printf("Failed to update rotation log: %v", err)
+    }
+    
+    // Prepare response
     response := map[string]interface{}{
-        "status": "accepted",
-        "message": "Key rotation initiated (prototype - not implemented)",
-        "rotation_id": "rot_" + generateRandomID(),
+        "rotation_id":   rotationID,
+        "status":        status,
+        "rotated_keys":  rotatedKeys,
+        "requested_type": request.KeyType,
+    }
+    
+    if len(errors) > 0 {
+        response["errors"] = errors
+        w.WriteHeader(http.StatusInternalServerError)
+    } else {
+        response["message"] = "Key rotation completed successfully"
     }
     
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(response)
+}
+
+func (ut *UnifiedTokenizer) handleKeyRotationHistory(w http.ResponseWriter, r *http.Request) {
+    if !ut.authenticateAPIRequest(r) {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+        return
+    }
+    
+    // Get query parameters
+    limit := 50
+    if l := r.URL.Query().Get("limit"); l != "" {
+        if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
+            limit = parsed
+        }
+    }
+    
+    rows, err := ut.db.Query(`
+        SELECT rotation_id, key_type, status, started_at, completed_at, error_message
+        FROM key_rotation_log
+        ORDER BY started_at DESC
+        LIMIT ?
+    `, limit)
+    
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Database error"})
+        return
+    }
+    defer rows.Close()
+    
+    var rotations []map[string]interface{}
+    
+    for rows.Next() {
+        var rotationID, keyType, status string
+        var errorMessage sql.NullString
+        var startedAt time.Time
+        var completedAt sql.NullTime
+        
+        err := rows.Scan(&rotationID, &keyType, &status, &startedAt, &completedAt, &errorMessage)
+        if err != nil {
+            continue
+        }
+        
+        rotation := map[string]interface{}{
+            "rotation_id": rotationID,
+            "key_type":    keyType,
+            "status":      status,
+            "started_at":  startedAt.Format(time.RFC3339),
+        }
+        
+        if completedAt.Valid {
+            rotation["completed_at"] = completedAt.Time.Format(time.RFC3339)
+            rotation["duration_ms"] = completedAt.Time.Sub(startedAt).Milliseconds()
+        }
+        
+        if errorMessage.Valid && errorMessage.String != "" {
+            rotation["error_message"] = errorMessage.String
+        }
+        
+        rotations = append(rotations, rotation)
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "rotations": rotations,
+        "total":     len(rotations),
+    })
 }
 
 func (ut *UnifiedTokenizer) startICAPServer() {
@@ -2004,6 +2164,7 @@ func (km *KeyManager) loadOrGenerateKEK() error {
     
     km.mu.Lock()
     km.kekCache[keyID] = key
+    km.currentKEKID = keyID
     km.mu.Unlock()
     
     return nil
@@ -2255,6 +2416,174 @@ func (km *KeyManager) decryptWithKEK(ciphertext, kek []byte) ([]byte, error) {
     
     nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
     return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+// Key rotation methods
+func (km *KeyManager) RotateKEK() error {
+    log.Printf("Starting KEK rotation...")
+    
+    // Generate new KEK
+    newKEK := make([]byte, 32)
+    if _, err := io.ReadFull(cryptorand.Reader, newKEK); err != nil {
+        return fmt.Errorf("failed to generate new KEK: %v", err)
+    }
+    
+    newKEKID := "kek_" + generateRandomID()
+    
+    // Get current KEK version
+    var currentVersion int
+    err := km.db.QueryRow(`
+        SELECT COALESCE(MAX(key_version), 0) FROM encryption_keys 
+        WHERE key_type = 'KEK'
+    `).Scan(&currentVersion)
+    
+    if err != nil {
+        return fmt.Errorf("failed to get current KEK version: %v", err)
+    }
+    
+    newVersion := currentVersion + 1
+    
+    // Start transaction for atomic rotation
+    tx, err := km.db.Begin()
+    if err != nil {
+        return fmt.Errorf("failed to start transaction: %v", err)
+    }
+    defer tx.Rollback()
+    
+    // Mark old KEK as retired
+    _, err = tx.Exec(`
+        UPDATE encryption_keys 
+        SET key_status = 'retired', retired_at = NOW() 
+        WHERE key_type = 'KEK' AND key_status = 'active'
+    `)
+    if err != nil {
+        return fmt.Errorf("failed to mark old KEK as rotated: %v", err)
+    }
+    
+    // Insert new KEK
+    _, err = tx.Exec(`
+        INSERT INTO encryption_keys 
+        (key_id, key_type, key_version, encrypted_key, key_status, activated_at)
+        VALUES (?, 'KEK', ?, ?, 'active', NOW())
+    `, newKEKID, newVersion, newKEK)
+    
+    if err != nil {
+        return fmt.Errorf("failed to store new KEK: %v", err)
+    }
+    
+    // Commit transaction
+    if err := tx.Commit(); err != nil {
+        return fmt.Errorf("failed to commit KEK rotation: %v", err)
+    }
+    
+    // Update cache
+    km.mu.Lock()
+    // Clear old KEKs from cache
+    km.kekCache = make(map[string][]byte)
+    km.kekCache[newKEKID] = newKEK
+    km.currentKEKID = newKEKID
+    km.mu.Unlock()
+    
+    log.Printf("KEK rotation completed successfully. New KEK ID: %s, Version: %d", newKEKID, newVersion)
+    return nil
+}
+
+func (km *KeyManager) RotateDEK() error {
+    log.Printf("Starting DEK rotation...")
+    
+    // Get current KEK for encrypting new DEK
+    var kekID string
+    var kek []byte
+    
+    km.mu.RLock()
+    for kid, k := range km.kekCache {
+        kekID = kid
+        kek = k
+        break
+    }
+    km.mu.RUnlock()
+    
+    if kek == nil {
+        return errors.New("no active KEK available for DEK rotation")
+    }
+    
+    // Generate new DEK
+    newDEK := make([]byte, 32)
+    if _, err := io.ReadFull(cryptorand.Reader, newDEK); err != nil {
+        return fmt.Errorf("failed to generate new DEK: %v", err)
+    }
+    
+    // Encrypt new DEK with KEK
+    encryptedDEK, err := km.encryptWithKEK(newDEK, kek)
+    if err != nil {
+        return fmt.Errorf("failed to encrypt new DEK: %v", err)
+    }
+    
+    newDEKID := "dek_" + generateRandomID()
+    
+    // Get current DEK version
+    var currentVersion int
+    err = km.db.QueryRow(`
+        SELECT COALESCE(MAX(key_version), 0) FROM encryption_keys 
+        WHERE key_type = 'DEK'
+    `).Scan(&currentVersion)
+    
+    if err != nil {
+        return fmt.Errorf("failed to get current DEK version: %v", err)
+    }
+    
+    newVersion := currentVersion + 1
+    
+    // Prepare metadata
+    metadata := map[string]interface{}{
+        "kek_id": kekID,
+        "algorithm": "AES-256-GCM",
+        "rotated_at": time.Now().UTC(),
+    }
+    metadataJSON, _ := json.Marshal(metadata)
+    
+    // Start transaction for atomic rotation
+    tx, err := km.db.Begin()
+    if err != nil {
+        return fmt.Errorf("failed to start transaction: %v", err)
+    }
+    defer tx.Rollback()
+    
+    // Mark old DEK as retired
+    _, err = tx.Exec(`
+        UPDATE encryption_keys 
+        SET key_status = 'retired', retired_at = NOW() 
+        WHERE key_type = 'DEK' AND key_status = 'active'
+    `)
+    if err != nil {
+        return fmt.Errorf("failed to mark old DEK as rotated: %v", err)
+    }
+    
+    // Insert new DEK
+    _, err = tx.Exec(`
+        INSERT INTO encryption_keys 
+        (key_id, key_type, key_version, encrypted_key, key_status, activated_at, metadata)
+        VALUES (?, 'DEK', ?, ?, 'active', NOW(), ?)
+    `, newDEKID, newVersion, encryptedDEK, metadataJSON)
+    
+    if err != nil {
+        return fmt.Errorf("failed to store new DEK: %v", err)
+    }
+    
+    // Commit transaction
+    if err := tx.Commit(); err != nil {
+        return fmt.Errorf("failed to commit DEK rotation: %v", err)
+    }
+    
+    // Update cache
+    km.mu.Lock()
+    // Clear old DEKs from cache (keep for decryption if needed)
+    km.dekCache[newDEKID] = newDEK
+    km.currentDEKID = newDEKID
+    km.mu.Unlock()
+    
+    log.Printf("DEK rotation completed successfully. New DEK ID: %s, Version: %d", newDEKID, newVersion)
+    return nil
 }
 
 func generateRandomID() string {

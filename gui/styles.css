@@ -714,6 +714,99 @@ body {
     border: 1px solid var(--border);
 }
 
+/* Warning Box */
+.warning-box {
+    background-color: #fef3cd;
+    border: 1px solid #ffd43b;
+    border-radius: 0.5rem;
+    padding: 1rem;
+    margin: 1rem 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+}
+
+.warning-box i {
+    color: var(--warning-color);
+    font-size: 1.25rem;
+    margin-top: 0.125rem;
+}
+
+.warning-box strong {
+    color: #664d03;
+}
+
+/* Key Management Specific */
+.key-info {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: 1fr 1fr;
+}
+
+.key-card {
+    background: var(--background);
+    border-radius: 0.5rem;
+    padding: 1rem;
+    border: 1px solid var(--border);
+}
+
+.key-card h4 {
+    margin-bottom: 0.5rem;
+    color: var(--primary-color);
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.key-detail {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+    font-size: 0.875rem;
+}
+
+.key-detail:last-child {
+    margin-bottom: 0;
+}
+
+.key-detail span:first-child {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.key-detail span:last-child {
+    color: var(--text-secondary);
+}
+
+.rotation-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+.rotation-status.success {
+    background-color: #dcfce7;
+    color: var(--success-color);
+}
+
+.rotation-status.warning {
+    background-color: #fef3cd;
+    color: var(--warning-color);
+}
+
+.rotation-status.error {
+    background-color: #fee2e2;
+    color: var(--error-color);
+}
+
+.rotation-status.processing {
+    background-color: #dbeafe;
+    color: var(--primary-color);
+}
+
 /* Utility Classes */
 .text-center { text-align: center; }
 .text-right { text-align: right; }
