@@ -38,6 +38,8 @@
 
 - **Unified Go Service**: Demonstrates multi-protocol tokenization in a single binary
 - **Triple Protocol Support**: HTTP (tokenization), ICAP (detokenization), REST API (management)  
+- **Web GUI Dashboard**: Modern browser-based interface for managing tokens and monitoring activity
+- **CLI Management Tool**: Command-line interface for all tokenization operations
 - **Transparent Interception**: Shows how proxies can intercept and modify traffic
 - **Bidirectional Flow**: Tokenizes inbound requests, detokenizes outbound requests
 - **Educational Architecture**: Illustrates concepts for reducing PCI compliance scope
@@ -64,6 +66,12 @@
                                       ┌──────────┴──────────┐
                                       │   Management API    │
                                       │    (Port 8090)      │
+                                      └──────────┬──────────┘
+                                                 │
+                                      ┌──────────▼──────────┐
+                                      │   Web GUI & CLI     │
+                                      │  Dashboard & Tools  │
+                                      │   (Port 8081)       │
                                       └─────────────────────┘
 ```
 
@@ -126,18 +134,37 @@ docker-compose ps
 
 ## Testing the System
 
-### 1. Access the Demo Application
-Open your browser and go to: http://localhost
+### 1. Access the Web GUI Dashboard
+Open your browser and go to: **http://localhost:8081**
+
+The TokenShield dashboard provides:
+- **System overview** with real-time statistics
+- **Token management** - view, search, and revoke tokens
+- **API key management** - create and manage API keys
+- **Activity monitoring** - track all tokenization operations
+- **Settings** - configure API connection and preferences
+
+#### Initial Setup
+1. Go to the **Settings** tab
+2. Enter API configuration:
+   - **API URL**: `http://localhost:8090`
+   - **Admin Secret**: `change-this-admin-secret`
+3. Click **"Test Connection"** and **"Save Settings"**
+4. Navigate to **API Keys** tab and create your first API key
+5. Use the new API key in Settings for full dashboard access
+
+### 2. Access the Demo Application
+You can also test the tokenization flow directly at: http://localhost
 
 You'll see a checkout form where you can enter credit card details.
 
-### 2. Test Credit Card Numbers
+### 3. Test Credit Card Numbers
 - Visa: 4532015112830366
 - Mastercard: 5425233430109903
 - Amex: 378282246310005
 - Discover: 6011111111111117
 
-### 3. What Happens During Testing
+### 4. What Happens During Testing
 
 1. **Submit Payment**: Enter card details in the form at http://localhost
 2. **HAProxy Intercepts**: The request goes through HAProxy which detects credit card data
@@ -147,7 +174,7 @@ You'll see a checkout form where you can enter credit card details.
 6. **Detokenization**: Squid calls the tokenizer to replace the token with the real card
 7. **Gateway Processing**: The payment gateway receives the real card number
 
-### 4. Monitor the Flow
+### 5. Monitor the Flow
 
 Watch the logs to see the tokenization in action:
 ```bash
@@ -160,10 +187,40 @@ docker-compose logs -f dummy-app
 docker-compose logs -f payment-gateway
 ```
 
-### 5. Check HAProxy Stats
+### 6. Check HAProxy Stats
 Visit: http://localhost:8404/stats
 
-### 6. Management API
+### 7. CLI Management Tool
+
+TokenShield includes a powerful CLI tool for managing the system:
+
+```bash
+# Build the CLI tool
+cd cli
+./build.sh
+
+# Or use Docker
+docker build -t tokenshield-cli .
+
+# Create API key
+./tokenshield apikey create "My App" --admin-secret change-this-admin-secret
+
+# List tokens
+./tokenshield token list --api-key YOUR_API_KEY
+
+# Search tokens
+./tokenshield token search --last-four 1234 --api-key YOUR_API_KEY
+
+# View activity
+./tokenshield activity --limit 50 --api-key YOUR_API_KEY
+
+# Get statistics
+./tokenshield stats --api-key YOUR_API_KEY
+```
+
+See `cli/README.md` for complete CLI documentation.
+
+### 8. Management API
 
 Create an API key:
 ```bash
@@ -192,6 +249,7 @@ curl http://localhost:8090/api/v1/stats \
   - 8080 (HTTP Tokenization)
   - 1344 (ICAP Detokenization)
   - 8090 (Management API)
+- **GUI Dashboard**: 8081 (Web Interface)
 - **MySQL**: 3306
 - **Squid**: 3128 (HTTP), 3129 (HTTPS)
 - **Dummy App**: 8000
