@@ -1,0 +1,16 @@
+# TokenShield CLI Configuration
+
+# API endpoint
+api_url: "http://localhost:8090"
+
+# API key for authentication
+api_key: "ts_your-api-key-here"
+
+# Admin secret for privileged operations
+admin_secret: "change-this-admin-secret"
+
+# Default limits
+default_limit: 50
+
+# Output format (table, json, yaml)
+output_format: "table"

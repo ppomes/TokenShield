@@ -1326,6 +1326,342 @@ func (ut *UnifiedTokenizer) handleAPIStats(w http.ResponseWriter, r *http.Reques
     })
 }
 
+// Additional API endpoints for GUI/CLI
+
+func (ut *UnifiedTokenizer) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
+    // Check admin privileges
+    adminSecret := r.Header.Get("X-Admin-Secret")
+    expectedSecret := getEnv("ADMIN_SECRET", "change-this-admin-secret")
+    if adminSecret != expectedSecret {
+        w.WriteHeader(http.StatusForbidden)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Admin privileges required"})
+        return
+    }
+    
+    var req struct {
+        ClientName  string   `json:"client_name"`
+        Permissions []string `json:"permissions,omitempty"`
+    }
+    
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+        return
+    }
+    
+    if req.ClientName == "" {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "client_name is required"})
+        return
+    }
+    
+    // Generate API key
+    apiKey := "ts_" + generateRandomID()
+    secretHash := "hash_" + generateRandomID() // In production, use proper hashing
+    
+    permissions, _ := json.Marshal(req.Permissions)
+    
+    _, err := ut.db.Exec(`
+        INSERT INTO api_keys (api_key, api_secret_hash, client_name, permissions, is_active)
+        VALUES (?, ?, ?, ?, TRUE)
+    `, apiKey, secretHash, req.ClientName, permissions)
+    
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create API key"})
+        return
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "api_key":     apiKey,
+        "client_name": req.ClientName,
+        "permissions": req.Permissions,
+        "created_at":  time.Now().Format(time.RFC3339),
+    })
+}
+
+func (ut *UnifiedTokenizer) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
+    // Check admin privileges
+    adminSecret := r.Header.Get("X-Admin-Secret")
+    expectedSecret := getEnv("ADMIN_SECRET", "change-this-admin-secret")
+    if adminSecret != expectedSecret {
+        w.WriteHeader(http.StatusForbidden)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Admin privileges required"})
+        return
+    }
+    
+    rows, err := ut.db.Query(`
+        SELECT api_key, client_name, permissions, is_active, created_at, last_used_at
+        FROM api_keys
+        ORDER BY created_at DESC
+    `)
+    
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Database error"})
+        return
+    }
+    defer rows.Close()
+    
+    var apiKeys []map[string]interface{}
+    
+    for rows.Next() {
+        var apiKey, clientName string
+        var permissions sql.NullString
+        var isActive bool
+        var createdAt time.Time
+        var lastUsedAt sql.NullTime
+        
+        err := rows.Scan(&apiKey, &clientName, &permissions, &isActive, &createdAt, &lastUsedAt)
+        if err != nil {
+            continue
+        }
+        
+        keyInfo := map[string]interface{}{
+            "api_key":     apiKey,
+            "client_name": clientName,
+            "is_active":   isActive,
+            "created_at":  createdAt.Format(time.RFC3339),
+        }
+        
+        if permissions.Valid {
+            var perms []string
+            json.Unmarshal([]byte(permissions.String), &perms)
+            keyInfo["permissions"] = perms
+        }
+        
+        if lastUsedAt.Valid {
+            keyInfo["last_used_at"] = lastUsedAt.Time.Format(time.RFC3339)
+        }
+        
+        apiKeys = append(apiKeys, keyInfo)
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "api_keys": apiKeys,
+        "total":    len(apiKeys),
+    })
+}
+
+func (ut *UnifiedTokenizer) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
+    // Check admin privileges
+    adminSecret := r.Header.Get("X-Admin-Secret")
+    expectedSecret := getEnv("ADMIN_SECRET", "change-this-admin-secret")
+    if adminSecret != expectedSecret {
+        w.WriteHeader(http.StatusForbidden)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Admin privileges required"})
+        return
+    }
+    
+    apiKey := strings.TrimPrefix(r.URL.Path, "/api/v1/api-keys/")
+    
+    result, err := ut.db.Exec(`
+        UPDATE api_keys SET is_active = FALSE WHERE api_key = ?
+    `, apiKey)
+    
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Database error"})
+        return
+    }
+    
+    rowsAffected, _ := result.RowsAffected()
+    if rowsAffected == 0 {
+        w.WriteHeader(http.StatusNotFound)
+        json.NewEncoder(w).Encode(map[string]string{"error": "API key not found"})
+        return
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]string{"message": "API key revoked successfully"})
+}
+
+func (ut *UnifiedTokenizer) handleGetActivity(w http.ResponseWriter, r *http.Request) {
+    if !ut.authenticateAPIRequest(r) {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+        return
+    }
+    
+    // Get query parameters
+    limit := 50
+    if l := r.URL.Query().Get("limit"); l != "" {
+        if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 1000 {
+            limit = parsed
+        }
+    }
+    
+    rows, err := ut.db.Query(`
+        SELECT tr.token, tr.request_type, tr.source_ip, tr.destination_url, 
+               tr.request_timestamp, tr.response_status, cc.last_four_digits
+        FROM token_requests tr
+        LEFT JOIN credit_cards cc ON tr.token = cc.token
+        ORDER BY tr.request_timestamp DESC
+        LIMIT ?
+    `, limit)
+    
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Database error"})
+        return
+    }
+    defer rows.Close()
+    
+    var activities []map[string]interface{}
+    
+    for rows.Next() {
+        var token, requestType, sourceIP, destinationURL string
+        var requestTimestamp time.Time
+        var responseStatus sql.NullInt64
+        var lastFour sql.NullString
+        
+        err := rows.Scan(&token, &requestType, &sourceIP, &destinationURL, 
+                        &requestTimestamp, &responseStatus, &lastFour)
+        if err != nil {
+            continue
+        }
+        
+        activity := map[string]interface{}{
+            "token":       token,
+            "type":        requestType,
+            "source_ip":   sourceIP,
+            "destination": destinationURL,
+            "timestamp":   requestTimestamp.Format(time.RFC3339),
+        }
+        
+        if responseStatus.Valid {
+            activity["status"] = responseStatus.Int64
+        }
+        
+        if lastFour.Valid {
+            activity["card_last_four"] = lastFour.String
+        }
+        
+        activities = append(activities, activity)
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "activities": activities,
+        "total":      len(activities),
+    })
+}
+
+func (ut *UnifiedTokenizer) handleSearchTokens(w http.ResponseWriter, r *http.Request) {
+    if !ut.authenticateAPIRequest(r) {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+        return
+    }
+    
+    var req struct {
+        LastFour  string `json:"last_four,omitempty"`
+        CardType  string `json:"card_type,omitempty"`
+        DateFrom  string `json:"date_from,omitempty"`
+        DateTo    string `json:"date_to,omitempty"`
+        IsActive  *bool  `json:"is_active,omitempty"`
+        Limit     int    `json:"limit,omitempty"`
+    }
+    
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+        return
+    }
+    
+    if req.Limit <= 0 || req.Limit > 1000 {
+        req.Limit = 100
+    }
+    
+    // Build dynamic query
+    query := `SELECT token, card_type, last_four_digits, first_six_digits, 
+                     created_at, is_active FROM credit_cards WHERE 1=1`
+    args := []interface{}{}
+    
+    if req.LastFour != "" {
+        query += " AND last_four_digits = ?"
+        args = append(args, req.LastFour)
+    }
+    
+    if req.CardType != "" {
+        query += " AND card_type = ?"
+        args = append(args, req.CardType)
+    }
+    
+    if req.DateFrom != "" {
+        query += " AND created_at >= ?"
+        args = append(args, req.DateFrom)
+    }
+    
+    if req.DateTo != "" {
+        query += " AND created_at <= ?"
+        args = append(args, req.DateTo)
+    }
+    
+    if req.IsActive != nil {
+        query += " AND is_active = ?"
+        args = append(args, *req.IsActive)
+    }
+    
+    query += " ORDER BY created_at DESC LIMIT ?"
+    args = append(args, req.Limit)
+    
+    rows, err := ut.db.Query(query, args...)
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Database error"})
+        return
+    }
+    defer rows.Close()
+    
+    var tokens []map[string]interface{}
+    
+    for rows.Next() {
+        var token, lastFour, firstSix string
+        var cardType sql.NullString
+        var createdAt time.Time
+        var isActive bool
+        
+        err := rows.Scan(&token, &cardType, &lastFour, &firstSix, &createdAt, &isActive)
+        if err != nil {
+            continue
+        }
+        
+        tokenInfo := map[string]interface{}{
+            "token":      token,
+            "last_four":  lastFour,
+            "first_six":  firstSix,
+            "created_at": createdAt.Format(time.RFC3339),
+            "is_active":  isActive,
+        }
+        
+        if cardType.Valid {
+            tokenInfo["card_type"] = cardType.String
+        }
+        
+        tokens = append(tokens, tokenInfo)
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "tokens": tokens,
+        "total":  len(tokens),
+    })
+}
+
+func (ut *UnifiedTokenizer) handleGetVersion(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "version":     "1.0.0-prototype",
+        "build_time":  time.Now().Format(time.RFC3339),
+        "token_format": ut.tokenFormat,
+        "kek_dek_enabled": ut.useKEKDEK,
+        "features": []string{"tokenization", "detokenization", "api", "icap"},
+    })
+}
+
 func (ut *UnifiedTokenizer) startHTTPServer() {
     http.HandleFunc("/", ut.handleTokenize)
     
@@ -1338,8 +1674,30 @@ func (ut *UnifiedTokenizer) startHTTPServer() {
 func (ut *UnifiedTokenizer) startAPIServer() {
     mux := http.NewServeMux()
     
-    // Health check
+    // Health check and version
     mux.HandleFunc("/health", ut.handleAPIHealth)
+    mux.HandleFunc("/api/v1/version", ut.handleGetVersion)
+    
+    // API Key management (admin only)
+    mux.HandleFunc("/api/v1/api-keys", func(w http.ResponseWriter, r *http.Request) {
+        switch r.Method {
+        case "GET":
+            ut.handleListAPIKeys(w, r)
+        case "POST":
+            ut.handleCreateAPIKey(w, r)
+        default:
+            w.WriteHeader(http.StatusMethodNotAllowed)
+        }
+    })
+    
+    mux.HandleFunc("/api/v1/api-keys/", func(w http.ResponseWriter, r *http.Request) {
+        switch r.Method {
+        case "DELETE":
+            ut.handleRevokeAPIKey(w, r)
+        default:
+            w.WriteHeader(http.StatusMethodNotAllowed)
+        }
+    })
     
     // Token management
     mux.HandleFunc("/api/v1/tokens", func(w http.ResponseWriter, r *http.Request) {
@@ -1347,6 +1705,14 @@ func (ut *UnifiedTokenizer) startAPIServer() {
         case "GET":
             ut.handleAPIListTokens(w, r)
         default:
+            w.WriteHeader(http.StatusMethodNotAllowed)
+        }
+    })
+    
+    mux.HandleFunc("/api/v1/tokens/search", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method == "POST" {
+            ut.handleSearchTokens(w, r)
+        } else {
             w.WriteHeader(http.StatusMethodNotAllowed)
         }
     })
@@ -1359,6 +1725,15 @@ func (ut *UnifiedTokenizer) startAPIServer() {
         case "DELETE":
             ut.handleAPIRevokeToken(w, r)
         default:
+            w.WriteHeader(http.StatusMethodNotAllowed)
+        }
+    })
+    
+    // Activity monitoring
+    mux.HandleFunc("/api/v1/activity", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method == "GET" {
+            ut.handleGetActivity(w, r)
+        } else {
             w.WriteHeader(http.StatusMethodNotAllowed)
         }
     })
