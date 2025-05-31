@@ -3,10 +3,13 @@ package main
 import (
     "bufio"
     "bytes"
+    "crypto/aes"
+    "crypto/cipher"
     cryptorand "crypto/rand"
     "database/sql"
     "encoding/base64"
     "encoding/json"
+    "errors"
     "fmt"
     "io"
     "log"
@@ -26,7 +29,8 @@ import (
 
 type UnifiedTokenizer struct {
     db              *sql.DB
-    encryptionKey   *fernet.Key
+    encryptionKey   *fernet.Key  // Legacy, kept for migration
+    keyManager      *KeyManager
     appEndpoint     string
     tokenRegex      *regexp.Regexp
     cardRegex       *regexp.Regexp
@@ -35,7 +39,17 @@ type UnifiedTokenizer struct {
     apiPort         string
     debug           bool
     tokenFormat     string // "prefix" for tok_ format, "luhn" for Luhn-valid format
+    useKEKDEK       bool   // Whether to use KEK/DEK encryption
     mu              sync.RWMutex
+}
+
+// KeyManager handles KEK/DEK encryption
+type KeyManager struct {
+    db           *sql.DB
+    kekCache     map[string][]byte
+    dekCache     map[string][]byte
+    currentDEKID string
+    mu           sync.RWMutex
 }
 
 func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
@@ -98,7 +112,10 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
         tokenRegex = regexp.MustCompile(`tok_[a-zA-Z0-9_\-]+=*`)
     }
     
-    return &UnifiedTokenizer{
+    // Check if KEK/DEK is enabled
+    useKEKDEK := getEnv("USE_KEK_DEK", "false") == "true"
+    
+    ut := &UnifiedTokenizer{
         db:            db,
         encryptionKey: encKey,
         appEndpoint:   getEnv("APP_ENDPOINT", "http://dummy-app:8000"),
@@ -109,7 +126,21 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
         apiPort:       getEnv("API_PORT", "8090"),
         debug:         getEnv("DEBUG_MODE", "0") == "1",
         tokenFormat:   tokenFormat,
-    }, nil
+        useKEKDEK:     useKEKDEK,
+    }
+    
+    // Initialize KeyManager if KEK/DEK is enabled
+    if useKEKDEK {
+        km, err := NewKeyManager(db)
+        if err != nil {
+            log.Printf("Warning: Failed to initialize KeyManager: %v. Falling back to legacy encryption.", err)
+            ut.useKEKDEK = false
+        } else {
+            ut.keyManager = km
+        }
+    }
+    
+    return ut, nil
 }
 
 func getEnv(key, defaultValue string) string {
@@ -999,15 +1030,37 @@ func (ut *UnifiedTokenizer) generateLuhnToken() string {
 }
 
 func (ut *UnifiedTokenizer) storeCard(token, cardNumber string) error {
-    encrypted, err := fernet.EncryptAndSign([]byte(cardNumber), ut.encryptionKey)
-    if err != nil {
-        return fmt.Errorf("encryption failed: %v", err)
+    var encrypted []byte
+    var keyID string
+    var err error
+    
+    if ut.useKEKDEK && ut.keyManager != nil {
+        // Use KEK/DEK encryption
+        encrypted, keyID, err = ut.keyManager.EncryptData([]byte(cardNumber))
+        if err != nil {
+            return fmt.Errorf("KEK/DEK encryption failed: %v", err)
+        }
+    } else {
+        // Use legacy Fernet encryption
+        encrypted, err = fernet.EncryptAndSign([]byte(cardNumber), ut.encryptionKey)
+        if err != nil {
+            return fmt.Errorf("encryption failed: %v", err)
+        }
     }
     
-    _, err = ut.db.Exec(`
-        INSERT INTO credit_cards (token, card_number_encrypted, last_four_digits, first_six_digits, expiry_month, expiry_year, created_at, is_active)
-        VALUES (?, ?, ?, ?, 12, 2025, NOW(), TRUE)
-    `, token, encrypted, cardNumber[len(cardNumber)-4:], cardNumber[:6])
+    if ut.useKEKDEK && keyID != "" {
+        _, err = ut.db.Exec(`
+            INSERT INTO credit_cards (token, card_number_encrypted, last_four_digits, first_six_digits, 
+                                     expiry_month, expiry_year, created_at, is_active, encryption_key_id)
+            VALUES (?, ?, ?, ?, 12, 2025, NOW(), TRUE, ?)
+        `, token, encrypted, cardNumber[len(cardNumber)-4:], cardNumber[:6], keyID)
+    } else {
+        _, err = ut.db.Exec(`
+            INSERT INTO credit_cards (token, card_number_encrypted, last_four_digits, first_six_digits, 
+                                     expiry_month, expiry_year, created_at, is_active)
+            VALUES (?, ?, ?, ?, 12, 2025, NOW(), TRUE)
+        `, token, encrypted, cardNumber[len(cardNumber)-4:], cardNumber[:6])
+    }
     
     if err == nil {
         _, _ = ut.db.Exec(`
@@ -1025,10 +1078,12 @@ func (ut *UnifiedTokenizer) retrieveCard(token string) string {
     }
     
     var encryptedCard []byte
+    var keyID sql.NullString
+    
     err := ut.db.QueryRow(`
-        SELECT card_number_encrypted FROM credit_cards 
+        SELECT card_number_encrypted, encryption_key_id FROM credit_cards 
         WHERE token = ? AND is_active = TRUE
-    `, token).Scan(&encryptedCard)
+    `, token).Scan(&encryptedCard, &keyID)
     
     if err != nil {
         if err == sql.ErrNoRows {
@@ -1041,10 +1096,22 @@ func (ut *UnifiedTokenizer) retrieveCard(token string) string {
         return ""
     }
     
-    cardBytes := fernet.VerifyAndDecrypt(encryptedCard, 0, []*fernet.Key{ut.encryptionKey})
-    if cardBytes == nil {
-        log.Printf("Failed to decrypt card for token %s", token)
-        return ""
+    var cardBytes []byte
+    
+    if ut.useKEKDEK && ut.keyManager != nil && keyID.Valid && keyID.String != "" {
+        // Use KEK/DEK decryption
+        cardBytes, err = ut.keyManager.DecryptData(encryptedCard, keyID.String)
+        if err != nil {
+            log.Printf("Failed to decrypt card with KEK/DEK for token %s: %v", token, err)
+            return ""
+        }
+    } else {
+        // Use legacy Fernet decryption
+        cardBytes = fernet.VerifyAndDecrypt(encryptedCard, 0, []*fernet.Key{ut.encryptionKey})
+        if cardBytes == nil {
+            log.Printf("Failed to decrypt card for token %s", token)
+            return ""
+        }
     }
     
     _, _ = ut.db.Exec(`
@@ -1299,10 +1366,106 @@ func (ut *UnifiedTokenizer) startAPIServer() {
     // Stats
     mux.HandleFunc("/api/v1/stats", ut.handleAPIStats)
     
+    // Key management endpoints (if KEK/DEK is enabled)
+    if ut.useKEKDEK {
+        mux.HandleFunc("/api/v1/keys/status", func(w http.ResponseWriter, r *http.Request) {
+            if r.Method == "GET" {
+                ut.handleKeyStatus(w, r)
+            } else {
+                w.WriteHeader(http.StatusMethodNotAllowed)
+            }
+        })
+        
+        mux.HandleFunc("/api/v1/keys/rotate", func(w http.ResponseWriter, r *http.Request) {
+            if r.Method == "POST" {
+                ut.handleKeyRotation(w, r)
+            } else {
+                w.WriteHeader(http.StatusMethodNotAllowed)
+            }
+        })
+    }
+    
     log.Printf("Starting API server on port %s", ut.apiPort)
     if err := http.ListenAndServe(":"+ut.apiPort, mux); err != nil {
         log.Fatalf("API server failed: %v", err)
     }
+}
+
+// Key management API handlers
+
+func (ut *UnifiedTokenizer) handleKeyStatus(w http.ResponseWriter, r *http.Request) {
+    if !ut.authenticateAPIRequest(r) {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+        return
+    }
+    
+    type KeyInfo struct {
+        KeyID      string    `json:"key_id"`
+        Version    int       `json:"version"`
+        Status     string    `json:"status"`
+        CreatedAt  time.Time `json:"created_at"`
+        CardsCount int       `json:"cards_encrypted,omitempty"`
+    }
+    
+    response := struct {
+        KEK *KeyInfo `json:"kek,omitempty"`
+        DEK *KeyInfo `json:"dek,omitempty"`
+    }{}
+    
+    // Get KEK info
+    var kekInfo KeyInfo
+    err := ut.db.QueryRow(`
+        SELECT key_id, key_version, key_status, created_at
+        FROM encryption_keys
+        WHERE key_type = 'KEK' AND key_status = 'active'
+        ORDER BY key_version DESC LIMIT 1
+    `).Scan(&kekInfo.KeyID, &kekInfo.Version, &kekInfo.Status, &kekInfo.CreatedAt)
+    
+    if err == nil {
+        response.KEK = &kekInfo
+    }
+    
+    // Get DEK info
+    var dekInfo KeyInfo
+    err = ut.db.QueryRow(`
+        SELECT key_id, key_version, key_status, created_at
+        FROM encryption_keys
+        WHERE key_type = 'DEK' AND key_status = 'active'
+        ORDER BY key_version DESC LIMIT 1
+    `).Scan(&dekInfo.KeyID, &dekInfo.Version, &dekInfo.Status, &dekInfo.CreatedAt)
+    
+    if err == nil {
+        response.DEK = &dekInfo
+        
+        // Count cards encrypted with this DEK
+        ut.db.QueryRow(`
+            SELECT COUNT(*) FROM credit_cards 
+            WHERE encryption_key_id = ?
+        `, dekInfo.KeyID).Scan(&dekInfo.CardsCount)
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func (ut *UnifiedTokenizer) handleKeyRotation(w http.ResponseWriter, r *http.Request) {
+    if !ut.authenticateAPIRequest(r) {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+        return
+    }
+    
+    // For prototype, just return a message
+    // In production, this would trigger the key rotation process
+    response := map[string]interface{}{
+        "status": "accepted",
+        "message": "Key rotation initiated (prototype - not implemented)",
+        "rotation_id": "rot_" + generateRandomID(),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
 }
 
 func (ut *UnifiedTokenizer) startICAPServer() {
@@ -1325,6 +1488,323 @@ func (ut *UnifiedTokenizer) startICAPServer() {
     }
 }
 
+// KeyManager Implementation
+
+func NewKeyManager(db *sql.DB) (*KeyManager, error) {
+    km := &KeyManager{
+        db:       db,
+        kekCache: make(map[string][]byte),
+        dekCache: make(map[string][]byte),
+    }
+    
+    // Load or generate KEK
+    if err := km.loadOrGenerateKEK(); err != nil {
+        return nil, fmt.Errorf("failed to initialize KEK: %v", err)
+    }
+    
+    // Load or generate DEK
+    if err := km.loadOrGenerateDEK(); err != nil {
+        return nil, fmt.Errorf("failed to initialize DEK: %v", err)
+    }
+    
+    return km, nil
+}
+
+func (km *KeyManager) loadOrGenerateKEK() error {
+    var keyID string
+    var key []byte
+    
+    err := km.db.QueryRow(`
+        SELECT key_id, encrypted_key FROM encryption_keys
+        WHERE key_type = 'KEK' AND key_status = 'active'
+        ORDER BY key_version DESC LIMIT 1
+    `).Scan(&keyID, &key)
+    
+    if err == sql.ErrNoRows {
+        // Generate new KEK
+        key = make([]byte, 32)
+        if _, err := io.ReadFull(cryptorand.Reader, key); err != nil {
+            return fmt.Errorf("failed to generate KEK: %v", err)
+        }
+        
+        keyID = "kek_" + generateRandomID()
+        
+        _, err = km.db.Exec(`
+            INSERT INTO encryption_keys 
+            (key_id, key_type, key_version, encrypted_key, key_status, activated_at)
+            VALUES (?, 'KEK', 1, ?, 'active', NOW())
+        `, keyID, key)
+        
+        if err != nil {
+            return fmt.Errorf("failed to store KEK: %v", err)
+        }
+        
+        log.Printf("Generated new KEK: %s", keyID)
+    } else if err != nil {
+        return err
+    }
+    
+    km.mu.Lock()
+    km.kekCache[keyID] = key
+    km.mu.Unlock()
+    
+    return nil
+}
+
+func (km *KeyManager) loadOrGenerateDEK() error {
+    var keyID string
+    var encryptedKey []byte
+    var metadata json.RawMessage
+    
+    err := km.db.QueryRow(`
+        SELECT key_id, encrypted_key, metadata FROM encryption_keys
+        WHERE key_type = 'DEK' AND key_status = 'active'
+        ORDER BY key_version DESC LIMIT 1
+    `).Scan(&keyID, &encryptedKey, &metadata)
+    
+    if err == sql.ErrNoRows {
+        // Generate new DEK
+        return km.generateNewDEK()
+    } else if err != nil {
+        return err
+    }
+    
+    // Decrypt DEK with KEK
+    var kekID string
+    km.mu.RLock()
+    for kid := range km.kekCache {
+        kekID = kid
+        break
+    }
+    kek := km.kekCache[kekID]
+    km.mu.RUnlock()
+    
+    dek, err := km.decryptWithKEK(encryptedKey, kek)
+    if err != nil {
+        return fmt.Errorf("failed to decrypt DEK: %v", err)
+    }
+    
+    km.mu.Lock()
+    km.dekCache[keyID] = dek
+    km.currentDEKID = keyID
+    km.mu.Unlock()
+    
+    return nil
+}
+
+func (km *KeyManager) generateNewDEK() error {
+    // Get active KEK
+    var kekID string
+    var kek []byte
+    
+    km.mu.RLock()
+    for kid, k := range km.kekCache {
+        kekID = kid
+        kek = k
+        break
+    }
+    km.mu.RUnlock()
+    
+    if kek == nil {
+        return errors.New("no active KEK found")
+    }
+    
+    // Generate new DEK
+    dek := make([]byte, 32)
+    if _, err := io.ReadFull(cryptorand.Reader, dek); err != nil {
+        return fmt.Errorf("failed to generate DEK: %v", err)
+    }
+    
+    // Encrypt DEK with KEK
+    encryptedDEK, err := km.encryptWithKEK(dek, kek)
+    if err != nil {
+        return fmt.Errorf("failed to encrypt DEK: %v", err)
+    }
+    
+    dekID := "dek_" + generateRandomID()
+    
+    // Get next version
+    var maxVersion int
+    km.db.QueryRow("SELECT COALESCE(MAX(key_version), 0) FROM encryption_keys WHERE key_type = 'DEK'").Scan(&maxVersion)
+    
+    // Store encrypted DEK
+    metadata := map[string]string{"kek_id": kekID}
+    metadataJSON, _ := json.Marshal(metadata)
+    
+    _, err = km.db.Exec(`
+        INSERT INTO encryption_keys 
+        (key_id, key_type, key_version, encrypted_key, key_status, metadata, activated_at)
+        VALUES (?, 'DEK', ?, ?, 'active', ?, NOW())
+    `, dekID, maxVersion+1, encryptedDEK, metadataJSON)
+    
+    if err != nil {
+        return fmt.Errorf("failed to store DEK: %v", err)
+    }
+    
+    km.mu.Lock()
+    km.dekCache[dekID] = dek
+    km.currentDEKID = dekID
+    km.mu.Unlock()
+    
+    log.Printf("Generated new DEK: %s", dekID)
+    
+    return nil
+}
+
+func (km *KeyManager) EncryptData(plaintext []byte) ([]byte, string, error) {
+    km.mu.RLock()
+    dekID := km.currentDEKID
+    dek, exists := km.dekCache[dekID]
+    km.mu.RUnlock()
+    
+    if !exists || len(dek) == 0 {
+        return nil, "", errors.New("no active DEK available")
+    }
+    
+    // AES-GCM encryption
+    block, err := aes.NewCipher(dek)
+    if err != nil {
+        return nil, "", err
+    }
+    
+    gcm, err := cipher.NewGCM(block)
+    if err != nil {
+        return nil, "", err
+    }
+    
+    nonce := make([]byte, gcm.NonceSize())
+    if _, err := io.ReadFull(cryptorand.Reader, nonce); err != nil {
+        return nil, "", err
+    }
+    
+    ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+    return ciphertext, dekID, nil
+}
+
+func (km *KeyManager) DecryptData(ciphertext []byte, dekID string) ([]byte, error) {
+    km.mu.RLock()
+    dek, exists := km.dekCache[dekID]
+    km.mu.RUnlock()
+    
+    if !exists {
+        // Try to load from database
+        if err := km.loadDEK(dekID); err != nil {
+            return nil, fmt.Errorf("failed to load DEK: %v", err)
+        }
+        
+        km.mu.RLock()
+        dek, exists = km.dekCache[dekID]
+        km.mu.RUnlock()
+        
+        if !exists {
+            return nil, errors.New("DEK not found")
+        }
+    }
+    
+    // AES-GCM decryption
+    block, err := aes.NewCipher(dek)
+    if err != nil {
+        return nil, err
+    }
+    
+    gcm, err := cipher.NewGCM(block)
+    if err != nil {
+        return nil, err
+    }
+    
+    nonceSize := gcm.NonceSize()
+    if len(ciphertext) < nonceSize {
+        return nil, errors.New("ciphertext too short")
+    }
+    
+    nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+    return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+func (km *KeyManager) loadDEK(dekID string) error {
+    var encryptedKey []byte
+    var metadata json.RawMessage
+    
+    err := km.db.QueryRow(`
+        SELECT encrypted_key, metadata FROM encryption_keys
+        WHERE key_id = ? AND key_type = 'DEK'
+    `, dekID).Scan(&encryptedKey, &metadata)
+    
+    if err != nil {
+        return err
+    }
+    
+    // Get KEK ID from metadata
+    var meta map[string]string
+    json.Unmarshal(metadata, &meta)
+    kekID := meta["kek_id"]
+    
+    km.mu.RLock()
+    kek, exists := km.kekCache[kekID]
+    km.mu.RUnlock()
+    
+    if !exists {
+        return errors.New("KEK not found")
+    }
+    
+    // Decrypt DEK
+    dek, err := km.decryptWithKEK(encryptedKey, kek)
+    if err != nil {
+        return err
+    }
+    
+    km.mu.Lock()
+    km.dekCache[dekID] = dek
+    km.mu.Unlock()
+    
+    return nil
+}
+
+func (km *KeyManager) encryptWithKEK(plaintext, kek []byte) ([]byte, error) {
+    block, err := aes.NewCipher(kek)
+    if err != nil {
+        return nil, err
+    }
+    
+    gcm, err := cipher.NewGCM(block)
+    if err != nil {
+        return nil, err
+    }
+    
+    nonce := make([]byte, gcm.NonceSize())
+    if _, err := io.ReadFull(cryptorand.Reader, nonce); err != nil {
+        return nil, err
+    }
+    
+    return gcm.Seal(nonce, nonce, plaintext, nil), nil
+}
+
+func (km *KeyManager) decryptWithKEK(ciphertext, kek []byte) ([]byte, error) {
+    block, err := aes.NewCipher(kek)
+    if err != nil {
+        return nil, err
+    }
+    
+    gcm, err := cipher.NewGCM(block)
+    if err != nil {
+        return nil, err
+    }
+    
+    nonceSize := gcm.NonceSize()
+    if len(ciphertext) < nonceSize {
+        return nil, errors.New("ciphertext too short")
+    }
+    
+    nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+    return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+func generateRandomID() string {
+    b := make([]byte, 16)
+    cryptorand.Read(b)
+    return base64.URLEncoding.EncodeToString(b)
+}
+
 func main() {
     log.SetFlags(log.LstdFlags | log.Lshortfile)
     
@@ -1338,6 +1818,7 @@ func main() {
     log.Printf("HTTP Port: %s, ICAP Port: %s, API Port: %s", ut.httpPort, ut.icapPort, ut.apiPort)
     log.Printf("App Endpoint: %s", ut.appEndpoint)
     log.Printf("Token Format: %s", ut.tokenFormat)
+    log.Printf("KEK/DEK Encryption: %v", ut.useKEKDEK)
     
     // Start all three servers
     go ut.startHTTPServer()
