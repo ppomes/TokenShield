@@ -77,7 +77,18 @@
 
 ## Quick Start
 
-### 1. Generate Encryption Key
+### Option 1: Automated Setup (Recommended)
+```bash
+./start.sh
+```
+This script automatically:
+- Creates `.env` file with a generated encryption key
+- Generates SSL certificates
+- Starts all services with default settings
+
+### Option 2: Manual Setup
+
+#### 1. Generate Encryption Key
 ```bash
 # Using OpenSSL (recommended)
 openssl rand -base64 32
@@ -86,13 +97,13 @@ openssl rand -base64 32
 python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-### 2. Configure Environment
+#### 2. Configure Environment
 ```bash
 cp .env.example .env
 # Edit .env and add the encryption key generated above
 ```
 
-#### Token Format Options
+##### Token Format Options
 TokenShield supports two token formats:
 
 1. **Prefix Format (default)**: `tok_abc123...`
@@ -104,30 +115,24 @@ TokenShield supports two token formats:
    - Looks like a valid credit card number
    - Passes Luhn algorithm validation
    - Uses prefix `9999` (not used by real issuers)
-   - Set `TOKEN_FORMAT=luhn`
+   - Set `TOKEN_FORMAT=luhn` in your `.env` file
 
-To use Luhn-valid tokens:
-```bash
-# In .env file
-TOKEN_FORMAT=luhn
-
-# Or when starting Docker Compose
-TOKEN_FORMAT=luhn docker-compose up -d
-```
-
-### 3. Generate SSL Certificates
+#### 3. Generate SSL Certificates
 ```bash
 cd certs
 ./generate-certs.sh
 cd ..
 ```
 
-### 4. Start All Services
+#### 4. Start All Services
 ```bash
 docker-compose up -d
+
+# Or with environment variable override:
+TOKEN_FORMAT=luhn docker-compose up -d
 ```
 
-### 5. Verify Services are Running
+#### 5. Verify Services are Running
 ```bash
 docker-compose ps
 ```
