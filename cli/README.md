@@ -15,24 +15,115 @@ sudo cp tokenshield /usr/local/bin/
 docker build -t tokenshield-cli .
 ```
 
-## Configuration
+## Getting Started
 
-Create a configuration file at `~/.tokenshield.yaml`:
+### First Time Setup
 
-```yaml
-api_url: "http://localhost:8090"
-api_key: "ts_your-api-key-here"
-admin_secret: "change-this-admin-secret"
+The CLI uses session-based authentication (like the GUI). Start by logging in:
+
+```bash
+# First time login - creates config file automatically
+tokenshield login
+Username: admin
+Password: [hidden input]
+
+Created config file: /Users/user/.tokenshield.yaml
+Successfully logged in as admin (admin)
+Session expires: 2024-01-15 10:30:00
 ```
 
-Or use environment variables:
+This creates a secure configuration file at `~/.tokenshield.yaml`:
+```yaml
+api_url: http://localhost:8090
+session_id: sess_abc123...
+session_expires: 2024-01-15T10:30:00Z
+username: admin
+```
+
+### Configuration Options
+
+#### Option 1: Interactive Login (Recommended)
+```bash
+tokenshield login
+# Prompts for username and secure password input
+```
+
+#### Option 2: Command Line Login
+```bash
+# Specify username, prompt for password
+tokenshield login -u admin
+
+# Specify both (not recommended - password visible in history)
+tokenshield login -u admin -p mypassword
+```
+
+#### Option 3: Environment Variables
 ```bash
 export TOKENSHIELD_API_URL="http://localhost:8090"
-export TOKENSHIELD_API_KEY="ts_your-api-key-here"
-export TOKENSHIELD_ADMIN_SECRET="change-this-admin-secret"
+# Then login as usual
+tokenshield login
+```
+
+#### Option 4: Custom Config File
+```bash
+tokenshield --config /path/to/config.yaml login
+```
+
+## Authentication
+
+### Session-Based (Primary Method)
+```bash
+# Login once to get session
+tokenshield login
+
+# Use commands with active session
+tokenshield token list
+tokenshield stats
+
+# Logout when done
+tokenshield logout
+```
+
+### Admin Secret (Bootstrap Only)
+For initial setup or emergency access:
+```bash
+tokenshield --admin-secret "change-this-admin-secret" user create ...
 ```
 
 ## Commands
+
+### Authentication
+
+#### Login
+```bash
+# Interactive login
+tokenshield login
+
+# With username
+tokenshield login -u admin
+
+# Check current session
+tokenshield whoami
+```
+
+#### Logout
+```bash
+tokenshield logout
+```
+
+### Configuration Management
+
+#### Show Configuration
+```bash
+# Display config file location and security status
+tokenshield config show
+```
+
+#### Secure Configuration
+```bash
+# Fix file permissions automatically
+tokenshield config secure
+```
 
 ### System Information
 
@@ -74,7 +165,7 @@ tokenshield token revoke tok_abc123def456
 
 ### API Key Management
 
-> **Note:** API key operations require admin privileges
+> **Note:** API key operations require admin session
 
 #### List API Keys
 ```bash
@@ -88,6 +179,25 @@ tokenshield apikey create "My Application"
 
 # With specific permissions
 tokenshield apikey create "Dashboard" --permissions read,write,admin
+```
+
+### User Management
+
+> **Note:** User operations require admin session
+
+#### List Users
+```bash
+tokenshield user list
+```
+
+#### Create User
+```bash
+tokenshield user create --username newuser --email user@example.com --password mypassword --role operator
+```
+
+#### Delete User
+```bash
+tokenshield user delete username
 ```
 
 ### Monitoring
@@ -110,6 +220,9 @@ tokenshield stats
 
 ### Daily Operations
 ```bash
+# Check session status
+tokenshield whoami
+
 # Check system status
 tokenshield version
 tokenshield stats
@@ -123,10 +236,17 @@ tokenshield token search --last-four 1234 --active
 
 ### Administration
 ```bash
-# Create API key for new application
-tokenshield apikey create "New Dashboard" --permissions read,write
+# Login as admin
+tokenshield login -u admin
 
-# List all API keys
+# Create new user
+tokenshield user create --username operator1 --email op@company.com --password securepass --role operator
+
+# Create API key for application
+tokenshield apikey create "Payment Dashboard" --permissions read,write
+
+# List all users and API keys
+tokenshield user list
 tokenshield apikey list
 
 # Check system statistics
@@ -135,6 +255,9 @@ tokenshield stats
 
 ### Incident Response
 ```bash
+# Login quickly
+tokenshield login -u admin
+
 # Search for potentially compromised cards
 tokenshield token search --last-four 1234
 
@@ -143,28 +266,40 @@ tokenshield token revoke tok_suspicious_token
 
 # Monitor recent activity for anomalies
 tokenshield activity --limit 100
+
+# Check who has access
+tokenshield user list
+tokenshield apikey list
 ```
 
 ## Global Flags
 
 - `--api-url`: TokenShield API URL (default: http://localhost:8090)
-- `--api-key`: API key for authentication
-- `--admin-secret`: Admin secret for privileged operations
+- `--admin-secret`: Admin secret for privileged operations (bootstrap only)
 - `--config`: Configuration file path
 - `--verbose, -v`: Verbose output
 
-## Authentication
+## Security Features
 
-### API Key
-Most operations require an API key:
-```bash
-tokenshield --api-key "ts_your-key" token list
-```
+### Secure Configuration
+The CLI automatically:
+- ✅ Creates config files with secure permissions (600)
+- ✅ Warns about insecure file permissions
+- ✅ Hides password input during login
+- ✅ Uses temporary session tokens (not persistent API keys)
+- ✅ Supports automatic session expiration
 
-### Admin Operations
-Admin operations require both API key and admin secret:
+### Configuration Security Check
 ```bash
-tokenshield --admin-secret "your-secret" apikey list
+# Check config file security
+tokenshield config show
+# Output:
+# Configuration file: /Users/user/.tokenshield.yaml
+# File permissions: 600
+# Security status: ✅ Secure (owner access only)
+
+# Fix insecure permissions
+tokenshield config secure
 ```
 
 ## Docker Usage
@@ -172,19 +307,25 @@ tokenshield --admin-secret "your-secret" apikey list
 ### With Docker Network
 ```bash
 # Run with specific network (for containerized TokenShield)
-docker run --rm --network tokenshield_tokenshield-net tokenshield-cli \\
-  --api-url http://tokenshield-unified:8090 \\
-  --api-key "ts_your-key" \\
-  version
+docker run --rm --network tokenshield_tokenshield-net tokenshield-cli \
+  --api-url http://tokenshield-unified:8090 \
+  login
 ```
 
 ### With Host Network
 ```bash
 # Run with host network (for local TokenShield)
-docker run --rm --network host tokenshield-cli \\
-  --api-url http://localhost:8090 \\
-  --api-key "ts_your-key" \\
-  token list
+docker run --rm --network host tokenshield-cli \
+  --api-url http://localhost:8090 \
+  login
+```
+
+### With Volume for Config Persistence
+```bash
+# Mount home directory for config persistence
+docker run --rm --network host \
+  -v $HOME/.tokenshield.yaml:/root/.tokenshield.yaml \
+  tokenshield-cli token list
 ```
 
 ## Error Handling
@@ -192,17 +333,51 @@ docker run --rm --network host tokenshield-cli \\
 The CLI provides clear error messages:
 
 ```bash
-# Invalid API key
+# Not logged in
 tokenshield token list
-# Output: API Error: 401 Unauthorized
+# Output: Not logged in
 
-# Token not found
-tokenshield token revoke invalid-token
-# Output: Token not found: invalid-token
+# Invalid credentials
+tokenshield login
+# Output: Login failed: Invalid username or password
+
+# Session expired
+tokenshield token list
+# Output: Session expired, please login again
 
 # Missing admin privileges
-tokenshield apikey list
+tokenshield user list
 # Output: API Error: 403 Forbidden
+```
+
+## Session Management
+
+### Session Lifecycle
+```bash
+# Login (creates session)
+tokenshield login
+# Session expires: 2024-01-15 10:30:00
+
+# Check session status
+tokenshield whoami
+# Current user: admin (admin)
+
+# Session expires automatically
+tokenshield token list
+# Session expired, please login again
+
+# Manual logout
+tokenshield logout
+# Successfully logged out
+```
+
+### Multiple Environments
+```bash
+# Development environment
+tokenshield --config ~/.tokenshield-dev.yaml --api-url http://localhost:8090 login
+
+# Production environment  
+tokenshield --config ~/.tokenshield-prod.yaml --api-url https://tokenshield.company.com login
 ```
 
 ## Output Formats
@@ -217,22 +392,43 @@ Currently supports table format. JSON and YAML formats planned for future releas
 tokenshield version
 
 # Check configuration
-tokenshield version --verbose
+tokenshield config show
+
+# Use verbose mode
+tokenshield --verbose version
 ```
 
 ### Authentication Issues
 ```bash
-# Verify API key works
-tokenshield stats
+# Check if logged in
+tokenshield whoami
 
-# Test admin privileges
-tokenshield apikey list
+# Re-login if session expired
+tokenshield login
+
+# Check config file exists and has proper permissions
+tokenshield config show
+```
+
+### Configuration Issues
+```bash
+# Check current configuration
+tokenshield config show
+
+# Fix file permissions
+tokenshield config secure
+
+# Use different config file
+tokenshield --config /path/to/config.yaml whoami
 ```
 
 ### Debug Mode
 ```bash
 # Enable verbose output
 tokenshield --verbose token list
+
+# Check config file location
+tokenshield --verbose config show
 ```
 
 ## Integration
@@ -240,7 +436,8 @@ tokenshield --verbose token list
 ### Bash Scripts
 ```bash
 #!/bin/bash
-# Get token count
+# Login and get token count
+tokenshield login -u admin -p "$ADMIN_PASSWORD"
 TOKENS=$(tokenshield stats | grep "Active Tokens" | awk '{print $3}')
 echo "Current token count: $TOKENS"
 
@@ -248,15 +445,31 @@ echo "Current token count: $TOKENS"
 if [ "$TOKENS" -gt 1000 ]; then
     echo "WARNING: High token count detected"
 fi
+
+# Logout
+tokenshield logout
 ```
 
 ### Cron Jobs
 ```bash
-# Daily token cleanup (remove old tokens)
-0 2 * * * /usr/local/bin/tokenshield token search --active false | grep -v "CREATED" | awk '{print $1}' | xargs -I {} /usr/local/bin/tokenshield token revoke {}
+# Daily login and token monitoring
+0 2 * * * /usr/local/bin/tokenshield login -u monitor -p "$MONITOR_PASSWORD" && \
+          /usr/local/bin/tokenshield activity --limit 1000 > /var/log/tokenshield-daily.log && \
+          /usr/local/bin/tokenshield logout
 
-# Hourly activity monitoring
-0 * * * * /usr/local/bin/tokenshield activity --limit 100 | grep -c "ERROR" > /var/log/tokenshield-errors.log
+# Hourly activity check
+0 * * * * /usr/local/bin/tokenshield login -u monitor -p "$MONITOR_PASSWORD" && \
+          /usr/local/bin/tokenshield activity --limit 100 | grep -c "ERROR" > /var/log/tokenshield-errors.log && \
+          /usr/local/bin/tokenshield logout
+```
+
+### CI/CD Integration
+```bash
+# In CI/CD pipeline
+export TOKENSHIELD_API_URL="https://tokenshield.company.com"
+echo "$TOKENSHIELD_PASSWORD" | tokenshield login -u ci-user
+tokenshield stats
+tokenshield logout
 ```
 
 ## Development
@@ -272,9 +485,33 @@ go build -o tokenshield .
 
 ### Testing
 ```bash
-# Run with local TokenShield
-./tokenshield --api-url http://localhost:8090 version
+# Test with local TokenShield
+./tokenshield --api-url http://localhost:8090 login
 
-# Run with Docker
+# Test with Docker
 docker run --rm tokenshield-cli version
 ```
+
+### Configuration for Development
+```bash
+# Create development config
+cat > ~/.tokenshield-dev.yaml << EOF
+api_url: http://localhost:8090
+EOF
+
+# Use development config
+tokenshield --config ~/.tokenshield-dev.yaml login
+```
+
+## Migration from API Key Authentication
+
+If you have an existing config file with API keys, the CLI will continue to work but will show security warnings. To migrate to session-based authentication:
+
+1. Login with your existing credentials:
+   ```bash
+   tokenshield login
+   ```
+
+2. The old API key will be ignored and session-based auth will be used going forward.
+
+3. Your config file will be updated automatically with session information.

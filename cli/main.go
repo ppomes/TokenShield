@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"golang.org/x/term"
 )
 
 // Global configuration
@@ -74,11 +76,9 @@ func (c *TokenShieldClient) makeRequest(method, endpoint string, body io.Reader)
 		return nil, err
 	}
 
-	// Use session if available, otherwise fall back to API key
+	// Use session-based authentication (like GUI)
 	if c.SessionID != "" {
 		req.Header.Set("Authorization", "Bearer "+c.SessionID)
-	} else if c.APIKey != "" {
-		req.Header.Set("X-API-Key", c.APIKey)
 	}
 	if c.AdminSecret != "" {
 		req.Header.Set("X-Admin-Secret", c.AdminSecret)
@@ -134,6 +134,109 @@ var versionCmd = &cobra.Command{
 		fmt.Printf("Features: %v\n", result["features"])
 	},
 }
+
+// Config commands
+var configCmd = &cobra.Command{
+	Use:   "config",
+	Short: "Manage CLI configuration",
+	Long:  "Commands for managing CLI configuration and security",
+}
+
+var configSecureCmd = &cobra.Command{
+	Use:   "secure",
+	Short: "Secure the configuration file permissions",
+	Long:  "Set restrictive permissions (600) on the configuration file to protect credentials",
+	Run: func(cmd *cobra.Command, args []string) {
+		configFile := viper.ConfigFileUsed()
+		if configFile == "" {
+			fmt.Println("No configuration file found")
+			return
+		}
+		
+		// Check if config file contains sensitive data
+		hasSensitiveData := viper.GetString("session_id") != ""
+		
+		if !hasSensitiveData {
+			fmt.Printf("Configuration file %s contains no sensitive data\n", configFile)
+			return
+		}
+		
+		// Check current permissions
+		fileInfo, err := os.Stat(configFile)
+		if err != nil {
+			fmt.Printf("Error checking file: %v\n", err)
+			return
+		}
+		
+		currentPerm := fileInfo.Mode().Perm()
+		
+		// Check if already secure
+		if currentPerm&0077 == 0 {
+			fmt.Printf("✅ Configuration file %s already has secure permissions (%o)\n", configFile, currentPerm)
+			return
+		}
+		
+		// Fix permissions
+		if err := os.Chmod(configFile, 0600); err != nil {
+			fmt.Printf("❌ Error setting permissions: %v\n", err)
+			fmt.Printf("Please run manually: chmod 600 %s\n", configFile)
+			return
+		}
+		
+		fmt.Printf("✅ Successfully secured configuration file %s\n", configFile)
+		fmt.Printf("   Previous permissions: %o\n", currentPerm)
+		fmt.Printf("   New permissions: 600 (read/write for owner only)\n")
+	},
+}
+
+var configShowCmd = &cobra.Command{
+	Use:   "show",
+	Short: "Show current configuration",
+	Long:  "Display current configuration file location and security status",
+	Run: func(cmd *cobra.Command, args []string) {
+		configFile := viper.ConfigFileUsed()
+		if configFile == "" {
+			fmt.Println("No configuration file found")
+			fmt.Println("Default locations:")
+			home, _ := os.UserHomeDir()
+			fmt.Printf("  - %s/.tokenshield.yaml\n", home)
+			fmt.Printf("  - ./.tokenshield.yaml\n")
+			return
+		}
+		
+		fmt.Printf("Configuration file: %s\n", configFile)
+		
+		// Check permissions
+		fileInfo, err := os.Stat(configFile)
+		if err != nil {
+			fmt.Printf("Error checking file: %v\n", err)
+			return
+		}
+		
+		perm := fileInfo.Mode().Perm()
+		fmt.Printf("File permissions: %o\n", perm)
+		
+		// Check if secure
+		if perm&0077 == 0 {
+			fmt.Printf("Security status: ✅ Secure (owner access only)\n")
+		} else {
+			fmt.Printf("Security status: ⚠️  Insecure (readable by group/others)\n")
+		}
+		
+		// Show configured values (without revealing secrets)
+		fmt.Println("\nConfiguration:")
+		fmt.Printf("  API URL: %s\n", viper.GetString("api_url"))
+		
+		// API keys removed - CLI now uses session-based authentication like GUI
+		
+		if viper.GetString("session_id") != "" {
+			fmt.Printf("  Session: active (expires: %s)\n", viper.GetString("session_expires"))
+		} else {
+			fmt.Printf("  Session: not logged in\n")
+		}
+	},
+}
+
 
 // Token commands
 var tokenCmd = &cobra.Command{
@@ -486,8 +589,14 @@ var loginCmd = &cobra.Command{
 		
 		if password == "" {
 			fmt.Print("Password: ")
-			// TODO: Hide password input
-			fmt.Scanln(&password)
+			// Hide password input
+			bytePassword, err := term.ReadPassword(int(syscall.Stdin))
+			if err != nil {
+				fmt.Printf("Error reading password: %v\n", err)
+				os.Exit(1)
+			}
+			password = string(bytePassword)
+			fmt.Println() // New line after hidden input
 		}
 		
 		client := NewClient(apiURL, "", "", "")
@@ -522,12 +631,32 @@ var loginCmd = &cobra.Command{
 		viper.Set("session_id", authResp.SessionID)
 		viper.Set("session_expires", authResp.ExpiresAt.Format(time.RFC3339))
 		viper.Set("username", authResp.User.Username)
+		
+		// Ensure API URL is saved if not already set
+		if viper.GetString("api_url") == "" {
+			viper.Set("api_url", apiURL)
+		}
+		
+		// Write config file
 		if err := viper.WriteConfig(); err != nil {
-			// Try to create config file
-			home, _ := os.UserHomeDir()
+			// Config file doesn't exist, create it
+			home, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Printf("Error getting home directory: %v\n", err)
+				os.Exit(1)
+			}
+			
 			configPath := home + "/.tokenshield.yaml"
 			viper.SetConfigFile(configPath)
-			viper.WriteConfig()
+			
+			if err := viper.WriteConfigAs(configPath); err != nil {
+				fmt.Printf("Error creating config file: %v\n", err)
+				fmt.Printf("Session saved temporarily but won't persist\n")
+			} else {
+				fmt.Printf("Created config file: %s\n", configPath)
+				// Set secure permissions on new config file
+				os.Chmod(configPath, 0600)
+			}
 		}
 		
 		fmt.Printf("Successfully logged in as %s (%s)\n", authResp.User.Username, authResp.User.Role)
@@ -758,6 +887,42 @@ func formatTime(timeStr string) string {
 	return t.Format("2006-01-02 15:04:05")
 }
 
+func checkConfigFileSecurity() {
+	configFile := viper.ConfigFileUsed()
+	if configFile == "" {
+		return // No config file in use
+	}
+	
+	// Check if config file contains sensitive data
+	hasSensitiveData := viper.GetString("session_id") != ""
+	
+	if !hasSensitiveData {
+		return // No sensitive data to protect
+	}
+	
+	// Check file permissions
+	fileInfo, err := os.Stat(configFile)
+	if err != nil {
+		return // Can't check permissions
+	}
+	
+	perm := fileInfo.Mode().Perm()
+	
+	// Check if file is readable by group or others (should be 600 or 400)
+	if perm&0077 != 0 {
+		fmt.Fprintf(os.Stderr, "\n⚠️  SECURITY WARNING: Config file has insecure permissions\n")
+		fmt.Fprintf(os.Stderr, "   File: %s\n", configFile)
+		fmt.Fprintf(os.Stderr, "   Current permissions: %o\n", perm)
+		fmt.Fprintf(os.Stderr, "   Recommended: 600 (read/write for owner only)\n")
+		fmt.Fprintf(os.Stderr, "   \n")
+		fmt.Fprintf(os.Stderr, "   Your config file contains sensitive credentials (session tokens)\n")
+		fmt.Fprintf(os.Stderr, "   that could be read by other users on this system.\n")
+		fmt.Fprintf(os.Stderr, "   \n")
+		fmt.Fprintf(os.Stderr, "   To fix this, run: chmod 600 %s\n", configFile)
+		fmt.Fprintf(os.Stderr, "   \n")
+	}
+}
+
 func initConfig() {
 	if cfgFile != "" {
 		viper.SetConfigFile(cfgFile)
@@ -785,10 +950,8 @@ func initConfig() {
 		}
 	}
 	
-	if apiKey == "" {
-		apiKey = viper.GetString("api_key")
-	}
-	
+	// API keys removed - using session-based authentication only
+	// Admin secret only used as fallback for bootstrapping (e.g., creating initial user)
 	if adminSecret == "" {
 		adminSecret = viper.GetString("admin_secret")
 	}
@@ -809,6 +972,9 @@ func initConfig() {
 			}
 		}
 	}
+	
+	// Check config file security after loading sensitive data
+	checkConfigFileSecurity()
 }
 
 func init() {
@@ -817,7 +983,7 @@ func init() {
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.tokenshield.yaml)")
 	rootCmd.PersistentFlags().StringVar(&apiURL, "api-url", "", "TokenShield API URL (default: http://localhost:8090)")
-	rootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "API key for authentication")
+	// API key flag removed - using session-based authentication only
 	rootCmd.PersistentFlags().StringVar(&adminSecret, "admin-secret", "", "Admin secret for privileged operations")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 
@@ -852,6 +1018,7 @@ func init() {
 
 	// Add commands
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(loginCmd)
 	rootCmd.AddCommand(logoutCmd)
 	rootCmd.AddCommand(whoamiCmd)
@@ -871,6 +1038,9 @@ func init() {
 	userCmd.AddCommand(userListCmd)
 	userCmd.AddCommand(userCreateCmd)
 	userCmd.AddCommand(userDeleteCmd)
+	
+	configCmd.AddCommand(configShowCmd)
+	configCmd.AddCommand(configSecureCmd)
 }
 
 func main() {
