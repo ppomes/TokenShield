@@ -1,0 +1,313 @@
+# Network Policies for TokenShield components
+# These would be automatically created by the operator when security.networkPolicies.enabled = true
+
+---
+# Allow tokenizer to connect to database
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tokenshield-tokenizer-netpol
+  namespace: payment-processing
+spec:
+  podSelector:
+    matchLabels:
+      app: tokenshield
+      component: tokenizer
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow from HAProxy
+  - from:
+    - podSelector:
+        matchLabels:
+          app: tokenshield
+          component: haproxy
+    ports:
+    - protocol: TCP
+      port: 8080
+  # Allow from Squid for ICAP
+  - from:
+    - podSelector:
+        matchLabels:
+          app: tokenshield
+          component: squid
+    ports:
+    - protocol: TCP
+      port: 1344
+  # Allow from Dashboard for API
+  - from:
+    - podSelector:
+        matchLabels:
+          app: tokenshield
+          component: dashboard
+    ports:
+    - protocol: TCP
+      port: 8090
+  # Allow Prometheus scraping
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+      podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9090
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow to database
+  - to:
+    - podSelector:
+        matchLabels:
+          app: tokenshield
+          component: database
+    ports:
+    - protocol: TCP
+      port: 3306
+
+---
+# Database network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tokenshield-database-netpol
+  namespace: payment-processing
+spec:
+  podSelector:
+    matchLabels:
+      app: tokenshield
+      component: database
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Only allow from tokenizer
+  - from:
+    - podSelector:
+        matchLabels:
+          app: tokenshield
+          component: tokenizer
+    ports:
+    - protocol: TCP
+      port: 3306
+  # Allow from backup job
+  - from:
+    - podSelector:
+        matchLabels:
+          app: tokenshield
+          component: backup
+    ports:
+    - protocol: TCP
+      port: 3306
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow replication between database pods
+  - to:
+    - podSelector:
+        matchLabels:
+          app: tokenshield
+          component: database
+    ports:
+    - protocol: TCP
+      port: 3306
+    - protocol: TCP
+      port: 4444  # Galera SST
+    - protocol: TCP
+      port: 4567  # Galera cluster
+    - protocol: TCP
+      port: 4568  # Galera IST
+
+---
+# HAProxy ingress proxy network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tokenshield-haproxy-netpol
+  namespace: payment-processing
+spec:
+  podSelector:
+    matchLabels:
+      app: tokenshield
+      component: haproxy
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow from ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+  # Allow from application pods
+  - from:
+    - podSelector:
+        matchLabels:
+          app: ecommerce
+    ports:
+    - protocol: TCP
+      port: 80
+  egress:
+  # Allow to tokenizer
+  - to:
+    - podSelector:
+        matchLabels:
+          app: tokenshield
+          component: tokenizer
+    ports:
+    - protocol: TCP
+      port: 8080
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+
+---
+# Squid egress proxy network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tokenshield-squid-netpol
+  namespace: payment-processing
+spec:
+  podSelector:
+    matchLabels:
+      app: tokenshield
+      component: squid
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow from application pods
+  - from:
+    - podSelector:
+        matchLabels:
+          app: ecommerce
+    ports:
+    - protocol: TCP
+      port: 3128
+  egress:
+  # Allow to tokenizer for ICAP
+  - to:
+    - podSelector:
+        matchLabels:
+          app: tokenshield
+          component: tokenizer
+    ports:
+    - protocol: TCP
+      port: 1344
+  # Allow to external payment gateways
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+
+---
+# Dashboard network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tokenshield-dashboard-netpol
+  namespace: payment-processing
+spec:
+  podSelector:
+    matchLabels:
+      app: tokenshield
+      component: dashboard
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow from ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 80
+  egress:
+  # Allow to tokenizer API
+  - to:
+    - podSelector:
+        matchLabels:
+          app: tokenshield
+          component: tokenizer
+    ports:
+    - protocol: TCP
+      port: 8090
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+
+---
+# Default deny all for namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: payment-processing
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  egress:
+  # Always allow DNS
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53

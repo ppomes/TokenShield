@@ -1,0 +1,290 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: tokenshields.tokenization.io
+spec:
+  group: tokenization.io
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              # Tokenization Configuration
+              tokenization:
+                type: object
+                properties:
+                  format:
+                    type: string
+                    enum: ["prefix", "luhn"]
+                    default: "prefix"
+                    description: "Token format - 'prefix' for tok_xxx or 'luhn' for Luhn-valid tokens"
+                  encryption:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: true
+                      kekDek:
+                        type: boolean
+                        default: false
+                        description: "Enable KEK/DEK encryption"
+                      keyRotation:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                            default: false
+                          schedule:
+                            type: string
+                            default: "0 0 * * 0"  # Weekly
+                            description: "Cron schedule for automatic key rotation"
+              
+              # Database Configuration
+              database:
+                type: object
+                required: ["type"]
+                properties:
+                  type:
+                    type: string
+                    enum: ["mysql", "postgresql"]
+                    default: "mysql"
+                  connectionSecret:
+                    type: string
+                    description: "K8s secret containing database credentials"
+                  size:
+                    type: string
+                    default: "10Gi"
+                    description: "PVC size for database storage"
+              
+              # Proxy Configuration
+              proxies:
+                type: object
+                properties:
+                  inbound:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: true
+                      type:
+                        type: string
+                        enum: ["haproxy", "envoy", "nginx"]
+                        default: "haproxy"
+                      replicas:
+                        type: integer
+                        default: 2
+                        minimum: 1
+                  outbound:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: true
+                      type:
+                        type: string
+                        enum: ["squid", "envoy"]
+                        default: "squid"
+                      replicas:
+                        type: integer
+                        default: 2
+                        minimum: 1
+              
+              # Tokenizer Service Configuration
+              tokenizer:
+                type: object
+                properties:
+                  replicas:
+                    type: integer
+                    default: 3
+                    minimum: 1
+                  resources:
+                    type: object
+                    properties:
+                      requests:
+                        type: object
+                        properties:
+                          cpu:
+                            type: string
+                            default: "100m"
+                          memory:
+                            type: string
+                            default: "256Mi"
+                      limits:
+                        type: object
+                        properties:
+                          cpu:
+                            type: string
+                            default: "1000m"
+                          memory:
+                            type: string
+                            default: "1Gi"
+              
+              # GUI Dashboard
+              dashboard:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                    default: true
+                  ingress:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: false
+                      className:
+                        type: string
+                        default: "nginx"
+                      host:
+                        type: string
+                        description: "Dashboard hostname"
+                      tls:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                            default: false
+                          secretName:
+                            type: string
+              
+              # Monitoring
+              monitoring:
+                type: object
+                properties:
+                  prometheus:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: false
+                      serviceMonitor:
+                        type: boolean
+                        default: false
+                  grafana:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: false
+                      dashboards:
+                        type: boolean
+                        default: false
+              
+              # High Availability
+              highAvailability:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                    default: false
+                  database:
+                    type: object
+                    properties:
+                      replication:
+                        type: boolean
+                        default: true
+                      backups:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                            default: true
+                          schedule:
+                            type: string
+                            default: "0 2 * * *"  # Daily at 2 AM
+                          retention:
+                            type: integer
+                            default: 7
+                            description: "Backup retention in days"
+              
+              # Security Policies
+              security:
+                type: object
+                properties:
+                  networkPolicies:
+                    type: boolean
+                    default: true
+                  podSecurityPolicies:
+                    type: boolean
+                    default: true
+                  rbac:
+                    type: boolean
+                    default: true
+                  tls:
+                    type: object
+                    properties:
+                      internal:
+                        type: boolean
+                        default: true
+                        description: "Enable mTLS between components"
+                      certManager:
+                        type: boolean
+                        default: false
+                        description: "Use cert-manager for TLS certificates"
+                  
+          status:
+            type: object
+            properties:
+              phase:
+                type: string
+                enum: ["Pending", "Creating", "Running", "Failed", "Upgrading"]
+              message:
+                type: string
+              ready:
+                type: boolean
+              endpoints:
+                type: object
+                properties:
+                  tokenizer:
+                    type: string
+                  dashboard:
+                    type: string
+                  api:
+                    type: string
+              components:
+                type: object
+                properties:
+                  database:
+                    type: string
+                    enum: ["Pending", "Ready", "Failed"]
+                  tokenizer:
+                    type: string
+                    enum: ["Pending", "Ready", "Failed"]
+                  inboundProxy:
+                    type: string
+                    enum: ["Pending", "Ready", "Failed"]
+                  outboundProxy:
+                    type: string
+                    enum: ["Pending", "Ready", "Failed"]
+                  dashboard:
+                    type: string
+                    enum: ["Pending", "Ready", "Failed"]
+              lastUpdated:
+                type: string
+                format: date-time
+    additionalPrinterColumns:
+    - name: Status
+      type: string
+      jsonPath: .status.phase
+    - name: Ready
+      type: boolean
+      jsonPath: .status.ready
+    - name: Dashboard
+      type: string
+      jsonPath: .status.endpoints.dashboard
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+  scope: Namespaced
+  names:
+    plural: tokenshields
+    singular: tokenshield
+    kind: TokenShield
+    shortNames:
+    - ts

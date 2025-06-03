@@ -1,0 +1,96 @@
+apiVersion: tokenization.io/v1alpha1
+kind: TokenShield
+metadata:
+  name: tokenshield-prod
+  namespace: payment-processing
+spec:
+  # Basic tokenization setup
+  tokenization:
+    format: "prefix"
+    encryption:
+      enabled: true
+      kekDek: true
+      keyRotation:
+        enabled: true
+        schedule: "0 0 * * 0"  # Weekly rotation
+  
+  # Database configuration
+  database:
+    type: mysql
+    connectionSecret: tokenshield-db-secret
+    size: 20Gi
+  
+  # Proxy configuration for traffic interception
+  proxies:
+    inbound:
+      enabled: true
+      type: haproxy
+      replicas: 3
+    outbound:
+      enabled: true
+      type: squid
+      replicas: 2
+  
+  # Tokenizer service
+  tokenizer:
+    replicas: 3
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "2000m"
+        memory: "2Gi"
+  
+  # Dashboard with ingress
+  dashboard:
+    enabled: true
+    ingress:
+      enabled: true
+      className: nginx
+      host: tokenshield.example.com
+      tls:
+        enabled: true
+        secretName: tokenshield-tls
+  
+  # Enable monitoring
+  monitoring:
+    prometheus:
+      enabled: true
+      serviceMonitor: true
+    grafana:
+      enabled: true
+      dashboards: true
+  
+  # High availability settings
+  highAvailability:
+    enabled: true
+    database:
+      replication: true
+      backups:
+        enabled: true
+        schedule: "0 2 * * *"
+        retention: 30
+  
+  # Security policies
+  security:
+    networkPolicies: true
+    podSecurityPolicies: true
+    rbac: true
+    tls:
+      internal: true
+      certManager: true
+---
+# Database connection secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tokenshield-db-secret
+  namespace: payment-processing
+type: Opaque
+stringData:
+  host: "mysql.database.svc.cluster.local"
+  port: "3306"
+  username: "tokenshield"
+  password: "super-secret-password"
+  database: "tokenshield"

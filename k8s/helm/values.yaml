@@ -1,0 +1,266 @@
+# TokenShield Operator Helm Values
+
+# Operator configuration
+operator:
+  image:
+    repository: tokenshield/operator
+    tag: v0.1.0
+    pullPolicy: IfNotPresent
+  
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  
+  # Operator service account
+  serviceAccount:
+    create: true
+    name: tokenshield-operator
+  
+  # Monitoring
+  metrics:
+    enabled: true
+    port: 8080
+    serviceMonitor:
+      enabled: false
+
+# Default TokenShield instance configuration
+tokenshield:
+  # Create a default TokenShield instance
+  createInstance: true
+  
+  # Instance configuration
+  instance:
+    name: default
+    
+    tokenization:
+      format: prefix  # or "luhn"
+      encryption:
+        enabled: true
+        kekDek: false
+        # Encryption key secret reference
+        keySecret: tokenshield-encryption-key
+      
+      keyRotation:
+        enabled: false
+        schedule: "0 0 * * 0"  # Weekly
+    
+    database:
+      type: mysql
+      size: 10Gi
+      # Option 1: Use embedded database
+      embedded: true
+      
+      # Option 2: Use external database
+      # embedded: false
+      # connectionSecret: external-db-secret
+      
+      # Backup configuration
+      backup:
+        enabled: true
+        schedule: "0 2 * * *"  # Daily at 2 AM
+        retention: 7  # days
+        storageClass: "standard"
+        size: 20Gi
+    
+    # Component scaling
+    components:
+      tokenizer:
+        replicas: 2
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        
+        autoscaling:
+          enabled: true
+          minReplicas: 2
+          maxReplicas: 10
+          targetCPUUtilizationPercentage: 70
+      
+      inboundProxy:
+        type: haproxy
+        replicas: 2
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      
+      outboundProxy:
+        type: squid
+        replicas: 2
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+    
+    # Dashboard configuration
+    dashboard:
+      enabled: true
+      replicas: 1
+      
+      ingress:
+        enabled: true
+        className: nginx
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-prod
+          nginx.ingress.kubernetes.io/ssl-redirect: "true"
+        hosts:
+          - host: tokenshield.example.com
+            paths:
+              - path: /
+                pathType: Prefix
+        tls:
+          - secretName: tokenshield-tls
+            hosts:
+              - tokenshield.example.com
+    
+    # High Availability
+    highAvailability:
+      enabled: false
+      
+      database:
+        # MySQL Galera cluster
+        replication: true
+        replicas: 3
+      
+      # Pod disruption budgets
+      podDisruptionBudgets:
+        enabled: true
+        minAvailable:
+          tokenizer: 1
+          proxy: 1
+          dashboard: 1
+    
+    # Security settings
+    security:
+      networkPolicies:
+        enabled: true
+        
+        # Allow ingress from specific namespaces
+        allowNamespaces:
+          - name: ingress-nginx
+            podSelector:
+              app.kubernetes.io/name: ingress-nginx
+        
+        # Allow egress to specific services
+        allowEgress:
+          - name: payment-gateway
+            namespace: payment-services
+            port: 443
+      
+      podSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      
+      containerSecurityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      
+      # TLS configuration
+      tls:
+        internal:
+          enabled: true
+          certManager:
+            enabled: true
+            issuer: internal-ca-issuer
+    
+    # Monitoring
+    monitoring:
+      prometheus:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+          interval: 30s
+          labels:
+            prometheus: kube-prometheus
+        
+        # Custom recording rules
+        rules:
+          enabled: true
+          spec:
+            - alert: TokenizationRateHigh
+              expr: rate(tokenshield_tokenizations_total[5m]) > 1000
+              for: 5m
+              labels:
+                severity: warning
+              annotations:
+                summary: "High tokenization rate"
+                description: "Tokenization rate is {{ $value }} per second"
+            
+            - alert: TokenizationErrors
+              expr: rate(tokenshield_tokenizations_failed_total[5m]) > 10
+              for: 5m
+              labels:
+                severity: critical
+              annotations:
+                summary: "High tokenization error rate"
+                description: "Error rate is {{ $value }} per second"
+      
+      grafana:
+        enabled: true
+        dashboards:
+          enabled: true
+          labels:
+            grafana_dashboard: "1"
+    
+    # Resource quotas
+    resourceQuota:
+      enabled: false
+      hard:
+        requests.cpu: "10"
+        requests.memory: "20Gi"
+        persistentvolumeclaims: "10"
+
+# Global settings
+global:
+  # Image pull secrets
+  imagePullSecrets: []
+  # - name: regcred
+  
+  # Storage class for persistent volumes
+  storageClass: "standard"
+  
+  # Node selector for all pods
+  nodeSelector: {}
+  # disktype: ssd
+  
+  # Tolerations for all pods
+  tolerations: []
+  # - key: "dedicated"
+  #   operator: "Equal"
+  #   value: "tokenshield"
+  #   effect: "NoSchedule"
+  
+  # Affinity rules
+  affinity:
+    # Prefer to spread pods across zones
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                    - tokenshield
+            topologyKey: topology.kubernetes.io/zone
