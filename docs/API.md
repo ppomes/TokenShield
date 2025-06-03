@@ -7,22 +7,18 @@ http://localhost:8090/api/v1
 
 ## Authentication
 
-TokenShield supports two authentication methods:
+TokenShield uses session-based authentication for all clients (GUI and CLI).
 
-### 1. Session-Based Authentication (Recommended for UI)
+### Session-Based Authentication
 Users authenticate with username/password and receive a session token.
 
 ```
 Authorization: Bearer sess_your-session-token
 ```
 
-### 2. API Key Authentication (For Automation/CLI)
-Include the API key in the request header:
-```
-X-API-Key: your-api-key-here
-```
+Sessions expire after 24 hours and must be renewed by logging in again.
 
-**Note:** Admin operations no longer require X-Admin-Secret header when using session authentication with admin role.
+**Note:** Admin operations require a user with admin role. The legacy X-Admin-Secret header is no longer used.
 
 ## Endpoints
 
@@ -221,6 +217,8 @@ Get system version and configuration.
 ```
 
 ### API Key Management
+
+**Note:** API key authentication is not currently used by any TokenShield clients. Both the GUI and CLI use session-based authentication. These endpoints are available for future extensibility.
 
 #### POST /api/v1/api-keys
 Create a new API key. Requires admin role.
