@@ -894,6 +894,46 @@ body {
     font-size: 0.875rem;
 }
 
+.info-message {
+    padding: 0.75rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+}
+
+.info-message.warning {
+    background-color: #fef3cd;
+    color: #664d03;
+    border: 1px solid #ffd43b;
+}
+
+.form-help {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+/* Password Change Modal Specific Styles */
+#password-change-modal .modal-content {
+    max-width: 450px;
+}
+
+#password-change-modal .form-group:last-of-type {
+    margin-bottom: 0;
+}
+
+#password-change-modal .info-message.warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+
+#password-change-modal .info-message.warning::before {
+    content: "⚠️";
+    flex-shrink: 0;
+}
+
 /* User Management Styles */
 .user-role-badge {
     padding: 0.25rem 0.75rem;

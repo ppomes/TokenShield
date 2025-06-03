@@ -4,13 +4,12 @@ class TokenShieldDashboard {
     constructor() {
         this.config = {
             apiUrl: localStorage.getItem('tokenshield_api_url') || 'http://localhost:8090',
-            apiKey: localStorage.getItem('tokenshield_api_key') || '',
-            adminSecret: localStorage.getItem('tokenshield_admin_secret') || '',
             sessionId: localStorage.getItem('tokenshield_session_id') || ''
         };
         
         this.currentUser = null;
         this.refreshInterval = null;
+        this.passwordChangeRequired = false;
         this.init();
     }
 
@@ -52,24 +51,15 @@ class TokenShieldDashboard {
             });
         }
 
-        // Profile button
-        const profileBtn = document.getElementById('profile-btn');
-        if (profileBtn) {
-            profileBtn.addEventListener('click', (e) => {
+        // Change password button
+        const changePasswordBtn = document.getElementById('change-password-btn');
+        if (changePasswordBtn) {
+            changePasswordBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                // Navigate to settings with user section
-                document.querySelector('[data-section="settings"]').click();
+                this.showPasswordChangeModal();
             });
         }
 
-        // Settings button in dropdown
-        const settingsBtn = document.getElementById('settings-btn');
-        if (settingsBtn) {
-            settingsBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                document.querySelector('[data-section="settings"]').click();
-            });
-        }
 
         // User management
         const createUserBtn = document.getElementById('create-user-btn');
@@ -168,9 +158,14 @@ class TokenShieldDashboard {
                 // Store session
                 localStorage.setItem('tokenshield_session_id', authData.session_id);
                 
-                // Clear old API key to prevent conflicts
+                // Clear old API key and admin secret from previous auth system
                 localStorage.removeItem('tokenshield_api_key');
-                this.config.apiKey = '';
+                localStorage.removeItem('tokenshield_admin_secret');
+                
+                // Check if password change is required
+                if (authData.require_password_change) {
+                    this.showPasswordChangeModal(true);
+                }
                 
                 this.showDashboard();
                 this.updateUserMenu();
@@ -212,16 +207,9 @@ class TokenShieldDashboard {
             ...options.headers
         };
 
-        // Use session if available, otherwise fall back to API key
+        // Use session authentication
         if (this.config.sessionId) {
             headers['Authorization'] = `Bearer ${this.config.sessionId}`;
-            // Don't send API key if we have a session
-        } else if (this.config.apiKey) {
-            headers['X-API-Key'] = this.config.apiKey;
-        }
-
-        if (this.config.adminSecret) {
-            headers['X-Admin-Secret'] = this.config.adminSecret;
         }
 
         const response = await fetch(`${this.config.apiUrl}${endpoint}`, {
@@ -824,8 +812,6 @@ class TokenShieldDashboard {
 
     loadSettings() {
         document.getElementById('api-url').value = this.config.apiUrl;
-        document.getElementById('api-key').value = this.config.apiKey;
-        document.getElementById('admin-secret').value = this.config.adminSecret;
         
         const refreshInterval = localStorage.getItem('tokenshield_refresh_interval') || '0';
         document.getElementById('refresh-interval').value = refreshInterval;
@@ -836,13 +822,9 @@ class TokenShieldDashboard {
 
     saveSettings() {
         this.config.apiUrl = document.getElementById('api-url').value.trim();
-        this.config.apiKey = document.getElementById('api-key').value.trim();
-        this.config.adminSecret = document.getElementById('admin-secret').value.trim();
         
         // Save to localStorage
         localStorage.setItem('tokenshield_api_url', this.config.apiUrl);
-        localStorage.setItem('tokenshield_api_key', this.config.apiKey);
-        localStorage.setItem('tokenshield_admin_secret', this.config.adminSecret);
         
         const refreshInterval = document.getElementById('refresh-interval').value;
         localStorage.setItem('tokenshield_refresh_interval', refreshInterval);
@@ -861,17 +843,15 @@ class TokenShieldDashboard {
 
     async testConnection() {
         try {
-            const tempConfig = {
-                apiUrl: document.getElementById('api-url').value.trim(),
-                apiKey: document.getElementById('api-key').value.trim(),
-                adminSecret: document.getElementById('admin-secret').value.trim()
-            };
+            const apiUrl = document.getElementById('api-url').value.trim();
             
-            const url = `${tempConfig.apiUrl}/api/v1/version`;
+            const url = `${apiUrl}/api/v1/version`;
             const headers = { 'Content-Type': 'application/json' };
             
-            if (tempConfig.apiKey) headers['X-API-Key'] = tempConfig.apiKey;
-            if (tempConfig.adminSecret) headers['X-Admin-Secret'] = tempConfig.adminSecret;
+            // Use session authentication if available
+            if (this.config.sessionId) {
+                headers['Authorization'] = `Bearer ${this.config.sessionId}`;
+            }
             
             const response = await fetch(url, { headers });
             
@@ -1145,6 +1125,133 @@ class TokenShieldDashboard {
             toast.remove();
         }, 5000);
     }
+
+    // Password Change Methods
+    showPasswordChangeModal(required = false) {
+        const modal = document.getElementById('password-change-modal');
+        const title = document.getElementById('password-modal-title');
+        const message = document.getElementById('password-change-message');
+        const form = document.getElementById('password-change-form');
+        const cancelBtn = document.querySelector('#password-change-modal .btn-secondary');
+        const closeBtn = document.querySelector('#password-change-modal .modal-close');
+        
+        // Reset form
+        form.reset();
+        document.getElementById('password-error').style.display = 'none';
+        
+        if (required) {
+            title.textContent = 'Password Change Required';
+            message.textContent = 'You must change your password before continuing.';
+            message.style.display = 'block';
+            message.className = 'info-message warning';
+            
+            // Disable cancel/close if password change is required
+            cancelBtn.style.display = 'none';
+            closeBtn.style.display = 'none';
+        } else {
+            title.textContent = 'Change Password';
+            message.style.display = 'none';
+            cancelBtn.style.display = 'inline-block';
+            closeBtn.style.display = 'inline-block';
+        }
+        
+        modal.style.display = 'block';
+        this.passwordChangeRequired = required;
+    }
+
+    closePasswordModal() {
+        if (this.passwordChangeRequired) {
+            // Don't allow closing if password change is required
+            return;
+        }
+        
+        document.getElementById('password-change-modal').style.display = 'none';
+        document.getElementById('password-change-form').reset();
+        document.getElementById('password-error').style.display = 'none';
+    }
+
+    validatePassword(password) {
+        const errors = [];
+        
+        if (password.length < 8) {
+            errors.push('at least 8 characters');
+        }
+        if (!/[A-Z]/.test(password)) {
+            errors.push('at least one uppercase letter');
+        }
+        if (!/[a-z]/.test(password)) {
+            errors.push('at least one lowercase letter');
+        }
+        if (!/[0-9]/.test(password)) {
+            errors.push('at least one number');
+        }
+        if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
+            errors.push('at least one special character');
+        }
+        
+        return errors;
+    }
+
+    async savePasswordChange() {
+        const currentPassword = document.getElementById('current-password').value;
+        const newPassword = document.getElementById('new-password').value;
+        const confirmPassword = document.getElementById('confirm-password').value;
+        const errorDiv = document.getElementById('password-error');
+        
+        // Reset error display
+        errorDiv.style.display = 'none';
+        
+        // Validation
+        if (!currentPassword || !newPassword || !confirmPassword) {
+            errorDiv.textContent = 'All fields are required';
+            errorDiv.style.display = 'block';
+            return;
+        }
+        
+        if (newPassword !== confirmPassword) {
+            errorDiv.textContent = 'New passwords do not match';
+            errorDiv.style.display = 'block';
+            return;
+        }
+        
+        // Validate password strength
+        const passwordErrors = this.validatePassword(newPassword);
+        if (passwordErrors.length > 0) {
+            errorDiv.textContent = `Password must contain: ${passwordErrors.join(', ')}`;
+            errorDiv.style.display = 'block';
+            return;
+        }
+        
+        try {
+            const response = await this.makeRequest('/api/v1/auth/change-password', {
+                method: 'POST',
+                body: JSON.stringify({
+                    current_password: currentPassword,
+                    new_password: newPassword
+                })
+            });
+            
+            if (response.ok) {
+                this.showToast('Success', 'Password changed successfully', 'success');
+                this.passwordChangeRequired = false;
+                document.getElementById('password-change-modal').style.display = 'none';
+                document.getElementById('password-change-form').reset();
+                
+                // If this was a required password change, refresh user data
+                if (this.passwordChangeRequired) {
+                    await this.checkAuthentication();
+                }
+            } else {
+                const errorData = await response.json();
+                errorDiv.textContent = errorData.error || 'Failed to change password';
+                errorDiv.style.display = 'block';
+            }
+        } catch (error) {
+            console.error('Password change failed:', error);
+            errorDiv.textContent = 'Connection error. Please try again.';
+            errorDiv.style.display = 'block';
+        }
+    }
 }
 
 // Global functions for onclick handlers
@@ -1164,6 +1271,10 @@ function rotateKeys() { dashboard.rotateKeys(); }
 // User management global functions
 function closeUserModal() { dashboard.closeUserModal(); }
 function saveUser() { dashboard.saveUser(); }
+
+// Password change global functions
+function closePasswordModal() { dashboard.closePasswordModal(); }
+function savePasswordChange() { dashboard.savePasswordChange(); }
 
 // Initialize dashboard when page loads
 let dashboard;

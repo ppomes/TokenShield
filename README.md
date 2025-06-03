@@ -139,22 +139,41 @@ docker-compose ps
 ```
 
 #### 6. Default Admin User
-When the system starts for the first time, it automatically creates a default admin user:
+When the system starts for the first time, it automatically creates a default admin user with a secure random password:
 - **Username**: `admin`
-- **Password**: `admin123`
+- **Password**: Check the container logs for the initial password
 
-This user has full system administrator privileges. **You should change this password immediately after first login!**
+To view the initial admin password:
+```bash
+docker-compose logs unified-tokenizer | grep "ADMIN USER CREATED" -A 3
+```
+
+The password will be displayed in a format like:
+```
+========================================
+ADMIN USER CREATED - INITIAL CREDENTIALS:
+Username: admin
+Password: Xy#9mK@2pL&4nQ8w
+========================================
+```
+
+**IMPORTANT**: You will be required to change this password on first login!
 
 ## Testing the System
 
 ### 1. Access the Web GUI Dashboard
 Open your browser and go to: **http://localhost:8081**
 
-#### Default Login Credentials
-- **Username**: `admin`
-- **Password**: `admin123`
+#### Initial Login
+1. Get the admin password from the logs:
+   ```bash
+   docker-compose logs unified-tokenizer | grep "Password:" | tail -1
+   ```
+2. Login with:
+   - **Username**: `admin`
+   - **Password**: The random password from the logs
 
-⚠️ **Important**: Change the default admin password immediately after first login!
+⚠️ **Important**: You will be prompted to change the password on first login!
 
 The TokenShield dashboard provides:
 - **System overview** with real-time statistics
@@ -223,7 +242,7 @@ docker build -t tokenshield-cli .
 # Login with user credentials (recommended)
 ./tokenshield login
 # Enter username: admin
-# Enter password: admin123
+# Enter password: [use password from logs]
 
 # Or use API key authentication
 ./tokenshield apikey create "My App" --admin-secret change-this-admin-secret
@@ -265,8 +284,8 @@ The API supports two authentication methods:
 # Login
 curl -X POST http://localhost:8090/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "admin123"}'
-# Returns: {"session_id": "sess_xxx...", "user": {...}}
+  -d '{"username": "admin", "password": "[password-from-logs]"}'
+# Returns: {"session_id": "sess_xxx...", "user": {...}, "require_password_change": true}
 
 # Use session in subsequent requests
 curl http://localhost:8090/api/v1/tokens \

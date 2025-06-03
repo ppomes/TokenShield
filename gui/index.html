@@ -52,11 +52,8 @@
                         <span id="user-role" class="user-role-badge">Admin</span>
                     </div>
                     <div class="dropdown-divider"></div>
-                    <a href="#" id="profile-btn" class="dropdown-item">
-                        <i class="fas fa-user"></i> My Profile
-                    </a>
-                    <a href="#" id="settings-btn" class="dropdown-item">
-                        <i class="fas fa-cog"></i> Settings
+                    <a href="#" id="change-password-btn" class="dropdown-item">
+                        <i class="fas fa-key"></i> Change Password
                     </a>
                     <div class="dropdown-divider"></div>
                     <a href="#" id="logout-btn" class="dropdown-item">
@@ -392,14 +389,7 @@
                         <div class="form-group">
                             <label for="api-url">API URL</label>
                             <input type="text" id="api-url" class="form-input" placeholder="http://localhost:8090">
-                        </div>
-                        <div class="form-group">
-                            <label for="api-key">API Key</label>
-                            <input type="password" id="api-key" class="form-input" placeholder="ts_your-api-key">
-                        </div>
-                        <div class="form-group">
-                            <label for="admin-secret">Admin Secret</label>
-                            <input type="password" id="admin-secret" class="form-input" placeholder="admin-secret">
+                            <small class="form-help">The URL of the TokenShield API server</small>
                         </div>
                         <div class="form-actions">
                             <button class="btn btn-primary" onclick="saveSettings()">
@@ -520,6 +510,39 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeUserModal()">Cancel</button>
                 <button class="btn btn-primary" onclick="saveUser()">Create User</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Password Change Modal -->
+    <div id="password-change-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="password-modal-title">Change Password</h3>
+                <button class="modal-close" onclick="closePasswordModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="password-change-form">
+                    <div id="password-change-message" class="info-message" style="display: none;"></div>
+                    <div class="form-group">
+                        <label for="current-password">Current Password *</label>
+                        <input type="password" id="current-password" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-password">New Password *</label>
+                        <input type="password" id="new-password" required>
+                        <small class="form-help">Minimum 8 characters, must include uppercase, lowercase, number, and special character</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="confirm-password">Confirm Password *</label>
+                        <input type="password" id="confirm-password" required>
+                    </div>
+                    <div id="password-error" class="error-message" style="display: none;"></div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closePasswordModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="savePasswordChange()">Change Password</button>
             </div>
         </div>
     </div>

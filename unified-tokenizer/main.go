@@ -65,6 +65,7 @@ type User struct {
     IsActive     bool      `json:"is_active"`
     CreatedAt    time.Time `json:"created_at"`
     LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+    PasswordChangedAt *time.Time `json:"-"` // Don't expose in JSON
 }
 
 // UserSession represents an active user session
@@ -87,9 +88,10 @@ type AuthRequest struct {
 
 // AuthResponse represents a successful authentication
 type AuthResponse struct {
-    SessionID   string    `json:"session_id"`
-    User        User      `json:"user"`
-    ExpiresAt   time.Time `json:"expires_at"`
+    SessionID            string    `json:"session_id"`
+    User                 User      `json:"user"`
+    ExpiresAt            time.Time `json:"expires_at"`
+    RequirePasswordChange bool     `json:"require_password_change"`
 }
 
 // Permission constants
@@ -1826,12 +1828,16 @@ func (ut *UnifiedTokenizer) handleLogin(w http.ResponseWriter, r *http.Request) 
         Expires:  session.ExpiresAt,
     })
     
+    // Check if password change is required (password_changed_at is zero)
+    requirePasswordChange := user.PasswordChangedAt == nil || user.PasswordChangedAt.IsZero()
+    
     // Return auth response
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(AuthResponse{
-        SessionID: session.SessionID,
-        User:      *user,
-        ExpiresAt: session.ExpiresAt,
+        SessionID:            session.SessionID,
+        User:                 *user,
+        ExpiresAt:            session.ExpiresAt,
+        RequirePasswordChange: requirePasswordChange,
     })
 }
 
@@ -1913,6 +1919,148 @@ func (ut *UnifiedTokenizer) handleGetCurrentUser(w http.ResponseWriter, r *http.
     
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(session.User)
+}
+
+func (ut *UnifiedTokenizer) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "POST" {
+        w.WriteHeader(http.StatusMethodNotAllowed)
+        return
+    }
+
+    // Get session ID from cookie or Authorization header
+    sessionID := ""
+    if cookie, err := r.Cookie("session_id"); err == nil {
+        sessionID = cookie.Value
+    } else if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+        sessionID = strings.TrimPrefix(auth, "Bearer ")
+    }
+
+    if sessionID == "" {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Authentication required"})
+        return
+    }
+
+    // Validate session
+    session, err := ut.validateSession(sessionID)
+    if err != nil {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+        return
+    }
+
+    // Parse request body
+    var req struct {
+        CurrentPassword string `json:"current_password"`
+        NewPassword     string `json:"new_password"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+        return
+    }
+
+    // Validate input
+    if req.CurrentPassword == "" || req.NewPassword == "" {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Current password and new password are required"})
+        return
+    }
+
+    // Validate password strength
+    if err := ut.validatePasswordStrength(req.NewPassword); err != nil {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+        return
+    }
+
+    // Get current user's password hash from database
+    var currentPasswordHash string
+    err = ut.db.QueryRow("SELECT password_hash FROM users WHERE user_id = ?", session.User.UserID).Scan(&currentPasswordHash)
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Database error"})
+        return
+    }
+
+    // Verify current password
+    if err := bcrypt.CompareHashAndPassword([]byte(currentPasswordHash), []byte(req.CurrentPassword)); err != nil {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Current password is incorrect"})
+        return
+    }
+
+    // Hash new password
+    hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Password hashing failed"})
+        return
+    }
+
+    // Update password in database
+    _, err = ut.db.Exec(`
+        UPDATE users 
+        SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP 
+        WHERE user_id = ?`,
+        string(hashedPassword), session.User.UserID)
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Failed to update password"})
+        return
+    }
+
+    // Log the password change
+    _, err = ut.db.Exec(`
+        INSERT INTO user_audit_log (user_id, action, ip_address, details, created_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+        session.User.UserID, "password_change", r.RemoteAddr, "Password changed successfully")
+    if err != nil {
+        log.Printf("Failed to log password change activity: %v", err)
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]string{"message": "Password changed successfully"})
+}
+
+func (ut *UnifiedTokenizer) validatePasswordStrength(password string) error {
+    if len(password) < 8 {
+        return fmt.Errorf("password must be at least 8 characters long")
+    }
+    
+    var hasUpper, hasLower, hasDigit, hasSpecial bool
+    for _, char := range password {
+        switch {
+        case 'A' <= char && char <= 'Z':
+            hasUpper = true
+        case 'a' <= char && char <= 'z':
+            hasLower = true
+        case '0' <= char && char <= '9':
+            hasDigit = true
+        case strings.ContainsRune("!@#$%^&*()_+-=[]{}|;':\",./<>?", char):
+            hasSpecial = true
+        }
+    }
+    
+    var missing []string
+    if !hasUpper {
+        missing = append(missing, "uppercase letter")
+    }
+    if !hasLower {
+        missing = append(missing, "lowercase letter")
+    }
+    if !hasDigit {
+        missing = append(missing, "number")
+    }
+    if !hasSpecial {
+        missing = append(missing, "special character")
+    }
+    
+    if len(missing) > 0 {
+        return fmt.Errorf("password must contain at least one %s", strings.Join(missing, ", "))
+    }
+    
+    return nil
 }
 
 // User management handlers
@@ -2206,6 +2354,7 @@ func (ut *UnifiedTokenizer) startAPIServer() {
     mux.HandleFunc("/api/v1/auth/login", ut.handleLogin)
     mux.HandleFunc("/api/v1/auth/logout", ut.handleLogout)
     mux.HandleFunc("/api/v1/auth/me", ut.handleGetCurrentUser)
+    mux.HandleFunc("/api/v1/auth/change-password", ut.handleChangePassword)
     
     // API Key management (requires permissions)
     mux.HandleFunc("/api/v1/api-keys", func(w http.ResponseWriter, r *http.Request) {
@@ -3052,6 +3201,37 @@ func generateRandomID() string {
 
 // User authentication methods
 
+func generateSecurePassword(length int) string {
+    const (
+        uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        lowercase = "abcdefghijklmnopqrstuvwxyz"
+        digits    = "0123456789"
+        special   = "!@#$%^&*"
+    )
+    
+    allChars := uppercase + lowercase + digits + special
+    password := make([]byte, length)
+    
+    // Ensure at least one of each type
+    password[0] = uppercase[rand.Intn(len(uppercase))]
+    password[1] = lowercase[rand.Intn(len(lowercase))]
+    password[2] = digits[rand.Intn(len(digits))]
+    password[3] = special[rand.Intn(len(special))]
+    
+    // Fill the rest
+    for i := 4; i < length; i++ {
+        password[i] = allChars[rand.Intn(len(allChars))]
+    }
+    
+    // Shuffle the password
+    for i := len(password) - 1; i > 0; i-- {
+        j := rand.Intn(i + 1)
+        password[i], password[j] = password[j], password[i]
+    }
+    
+    return string(password)
+}
+
 func (ut *UnifiedTokenizer) createDefaultAdminUser() error {
     // Check if admin user already exists
     var count int
@@ -3064,8 +3244,11 @@ func (ut *UnifiedTokenizer) createDefaultAdminUser() error {
         return nil // Admin already exists
     }
     
-    // Generate default password hash for "admin123"
-    passwordHash, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+    // Generate a secure random password
+    randomPassword := generateSecurePassword(16)
+    
+    // Generate password hash
+    passwordHash, err := bcrypt.GenerateFromPassword([]byte(randomPassword), bcrypt.DefaultCost)
     if err != nil {
         return err
     }
@@ -3077,8 +3260,9 @@ func (ut *UnifiedTokenizer) createDefaultAdminUser() error {
     _, err = ut.db.Exec(`
         INSERT INTO users (
             user_id, username, email, password_hash, full_name, 
-            role, permissions, is_active, is_email_verified
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            role, permissions, is_active, is_email_verified,
+            password_changed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
     `, userID, "admin", "admin@tokenshield.local", string(passwordHash), 
        "Default Administrator", RoleAdmin, permissionsJSON, true, true)
     
@@ -3086,7 +3270,14 @@ func (ut *UnifiedTokenizer) createDefaultAdminUser() error {
         return fmt.Errorf("failed to create default admin user: %v", err)
     }
     
-    log.Printf("Created default admin user (username: admin, password: admin123) - PLEASE CHANGE PASSWORD!")
+    log.Printf("========================================")
+    log.Printf("ADMIN USER CREATED - INITIAL CREDENTIALS:")
+    log.Printf("Username: admin")
+    log.Printf("Password: %s", randomPassword)
+    log.Printf("========================================")
+    log.Printf("WARNING: You must change this password on first login!")
+    log.Printf("========================================")
+    
     return nil
 }
 
@@ -3095,16 +3286,18 @@ func (ut *UnifiedTokenizer) authenticateUser(username, password string) (*User, 
     var passwordHash string
     var permissionsJSON []byte
     var lastLoginAt sql.NullTime
+    var passwordChangedAt sql.NullTime
     
     err := ut.db.QueryRow(`
         SELECT user_id, username, email, password_hash, full_name, 
-               role, permissions, is_active, created_at, last_login_at
+               role, permissions, is_active, created_at, last_login_at,
+               password_changed_at
         FROM users 
         WHERE username = ? OR email = ?
     `, username, username).Scan(
         &user.UserID, &user.Username, &user.Email, &passwordHash,
         &user.FullName, &user.Role, &permissionsJSON, &user.IsActive,
-        &user.CreatedAt, &lastLoginAt,
+        &user.CreatedAt, &lastLoginAt, &passwordChangedAt,
     )
     
     if err == sql.ErrNoRows {
@@ -3135,6 +3328,10 @@ func (ut *UnifiedTokenizer) authenticateUser(username, password string) (*User, 
     
     if lastLoginAt.Valid {
         user.LastLoginAt = &lastLoginAt.Time
+    }
+    
+    if passwordChangedAt.Valid {
+        user.PasswordChangedAt = &passwordChangedAt.Time
     }
     
     // Update last login time and reset failed attempts
