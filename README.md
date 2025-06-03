@@ -277,9 +277,9 @@ See `cli/README.md` for complete CLI documentation.
 ### 8. Management API
 
 #### Authentication
-The API supports two authentication methods:
+TokenShield uses session-based authentication for all clients (GUI and CLI).
 
-1. **Session-based authentication** (for interactive use):
+**Session-based authentication**:
 ```bash
 # Login
 curl -X POST http://localhost:8090/api/v1/auth/login \
@@ -292,18 +292,7 @@ curl http://localhost:8090/api/v1/tokens \
   -H "Authorization: Bearer sess_xxx..."
 ```
 
-2. **API key authentication** (for automation):
-```bash
-# Create an API key (requires admin privileges)
-curl -X POST http://localhost:8090/api/v1/api-keys \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sess_xxx..." \
-  -d '{"client_name": "Test Client"}'
-
-# Use API key
-curl http://localhost:8090/api/v1/tokens \
-  -H "X-API-Key: YOUR_API_KEY"
-```
+Note: API key authentication endpoints exist for future extensibility but are not currently used by any clients.
 
 #### Common Operations
 ```bash
