@@ -25,6 +25,7 @@ import (
 
     "github.com/fernet/fernet-go"
     _ "github.com/go-sql-driver/mysql"
+    "golang.org/x/crypto/bcrypt"
 )
 
 type UnifiedTokenizer struct {
@@ -52,6 +53,67 @@ type KeyManager struct {
     currentDEKID string
     mu           sync.RWMutex
 }
+
+// User represents a system user
+type User struct {
+    UserID       string    `json:"user_id"`
+    Username     string    `json:"username"`
+    Email        string    `json:"email"`
+    FullName     string    `json:"full_name"`
+    Role         string    `json:"role"`
+    Permissions  []string  `json:"permissions"`
+    IsActive     bool      `json:"is_active"`
+    CreatedAt    time.Time `json:"created_at"`
+    LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+}
+
+// UserSession represents an active user session
+type UserSession struct {
+    SessionID    string    `json:"session_id"`
+    UserID       string    `json:"user_id"`
+    User         *User     `json:"user,omitempty"`
+    IPAddress    string    `json:"ip_address"`
+    UserAgent    string    `json:"user_agent"`
+    CreatedAt    time.Time `json:"created_at"`
+    ExpiresAt    time.Time `json:"expires_at"`
+    LastActivity time.Time `json:"last_activity"`
+}
+
+// AuthRequest represents a login request
+type AuthRequest struct {
+    Username string `json:"username"`
+    Password string `json:"password"`
+}
+
+// AuthResponse represents a successful authentication
+type AuthResponse struct {
+    SessionID   string    `json:"session_id"`
+    User        User      `json:"user"`
+    ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// Permission constants
+const (
+    PermTokensRead    = "tokens.read"
+    PermTokensWrite   = "tokens.write"
+    PermTokensDelete  = "tokens.delete"
+    PermAPIKeysRead   = "api_keys.read"
+    PermAPIKeysWrite  = "api_keys.write"
+    PermAPIKeysDelete = "api_keys.delete"
+    PermUsersRead     = "users.read"
+    PermUsersWrite    = "users.write"
+    PermUsersDelete   = "users.delete"
+    PermSystemAdmin   = "system.admin"
+    PermActivityRead  = "activity.read"
+    PermStatsRead     = "stats.read"
+)
+
+// Role constants
+const (
+    RoleAdmin    = "admin"
+    RoleOperator = "operator"
+    RoleViewer   = "viewer"
+)
 
 func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     // Database connection
@@ -1209,11 +1271,7 @@ func (ut *UnifiedTokenizer) authenticateAPIRequest(r *http.Request) bool {
 }
 
 func (ut *UnifiedTokenizer) handleAPIListTokens(w http.ResponseWriter, r *http.Request) {
-    if !ut.authenticateAPIRequest(r) {
-        w.WriteHeader(http.StatusUnauthorized)
-        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
-        return
-    }
+    // Permission check is handled by requirePermission middleware
     
     rows, err := ut.db.Query(`
         SELECT token, card_type, last_four_digits, first_six_digits, 
@@ -1265,11 +1323,7 @@ func (ut *UnifiedTokenizer) handleAPIListTokens(w http.ResponseWriter, r *http.R
 }
 
 func (ut *UnifiedTokenizer) handleAPIGetToken(w http.ResponseWriter, r *http.Request) {
-    if !ut.authenticateAPIRequest(r) {
-        w.WriteHeader(http.StatusUnauthorized)
-        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
-        return
-    }
+    // Permission check is handled by requirePermission middleware
     
     // Extract token from URL path
     token := strings.TrimPrefix(r.URL.Path, "/api/v1/tokens/")
@@ -1322,11 +1376,7 @@ func (ut *UnifiedTokenizer) handleAPIGetToken(w http.ResponseWriter, r *http.Req
 }
 
 func (ut *UnifiedTokenizer) handleAPIRevokeToken(w http.ResponseWriter, r *http.Request) {
-    if !ut.authenticateAPIRequest(r) {
-        w.WriteHeader(http.StatusUnauthorized)
-        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
-        return
-    }
+    // Permission check is handled by requirePermission middleware
     
     token := strings.TrimPrefix(r.URL.Path, "/api/v1/tokens/")
     
@@ -1354,11 +1404,7 @@ func (ut *UnifiedTokenizer) handleAPIRevokeToken(w http.ResponseWriter, r *http.
 }
 
 func (ut *UnifiedTokenizer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
-    if !ut.authenticateAPIRequest(r) {
-        w.WriteHeader(http.StatusUnauthorized)
-        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
-        return
-    }
+    // Permission check is handled by requirePermission middleware
     
     // Get active token count
     var activeTokens int
@@ -1394,12 +1440,11 @@ func (ut *UnifiedTokenizer) handleAPIStats(w http.ResponseWriter, r *http.Reques
 // Additional API endpoints for GUI/CLI
 
 func (ut *UnifiedTokenizer) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
-    // Check admin privileges
-    adminSecret := r.Header.Get("X-Admin-Secret")
-    expectedSecret := getEnv("ADMIN_SECRET", "change-this-admin-secret")
-    if adminSecret != expectedSecret {
-        w.WriteHeader(http.StatusForbidden)
-        json.NewEncoder(w).Encode(map[string]string{"error": "Admin privileges required"})
+    // Get user ID from request context (set by requirePermission middleware)
+    userID := r.Header.Get("X-User-ID")
+    if userID == "" {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "User context not found"})
         return
     }
     
@@ -1427,9 +1472,9 @@ func (ut *UnifiedTokenizer) handleCreateAPIKey(w http.ResponseWriter, r *http.Re
     permissions, _ := json.Marshal(req.Permissions)
     
     _, err := ut.db.Exec(`
-        INSERT INTO api_keys (api_key, api_secret_hash, client_name, permissions, is_active)
-        VALUES (?, ?, ?, ?, TRUE)
-    `, apiKey, secretHash, req.ClientName, permissions)
+        INSERT INTO api_keys (api_key, api_secret_hash, client_name, permissions, is_active, user_id, created_by)
+        VALUES (?, ?, ?, ?, TRUE, ?, ?)
+    `, apiKey, secretHash, req.ClientName, permissions, userID, userID)
     
     if err != nil {
         w.WriteHeader(http.StatusInternalServerError)
@@ -1447,14 +1492,7 @@ func (ut *UnifiedTokenizer) handleCreateAPIKey(w http.ResponseWriter, r *http.Re
 }
 
 func (ut *UnifiedTokenizer) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
-    // Check admin privileges
-    adminSecret := r.Header.Get("X-Admin-Secret")
-    expectedSecret := getEnv("ADMIN_SECRET", "change-this-admin-secret")
-    if adminSecret != expectedSecret {
-        w.WriteHeader(http.StatusForbidden)
-        json.NewEncoder(w).Encode(map[string]string{"error": "Admin privileges required"})
-        return
-    }
+    // Permission check is handled by requirePermission middleware
     
     rows, err := ut.db.Query(`
         SELECT api_key, client_name, permissions, is_active, created_at, last_used_at
@@ -1511,14 +1549,7 @@ func (ut *UnifiedTokenizer) handleListAPIKeys(w http.ResponseWriter, r *http.Req
 }
 
 func (ut *UnifiedTokenizer) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
-    // Check admin privileges
-    adminSecret := r.Header.Get("X-Admin-Secret")
-    expectedSecret := getEnv("ADMIN_SECRET", "change-this-admin-secret")
-    if adminSecret != expectedSecret {
-        w.WriteHeader(http.StatusForbidden)
-        json.NewEncoder(w).Encode(map[string]string{"error": "Admin privileges required"})
-        return
-    }
+    // Permission check is handled by requirePermission middleware
     
     apiKey := strings.TrimPrefix(r.URL.Path, "/api/v1/api-keys/")
     
@@ -1544,11 +1575,7 @@ func (ut *UnifiedTokenizer) handleRevokeAPIKey(w http.ResponseWriter, r *http.Re
 }
 
 func (ut *UnifiedTokenizer) handleGetActivity(w http.ResponseWriter, r *http.Request) {
-    if !ut.authenticateAPIRequest(r) {
-        w.WriteHeader(http.StatusUnauthorized)
-        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
-        return
-    }
+    // Permission check is handled by requirePermission middleware
     
     // Get query parameters
     limit := 50
@@ -1615,11 +1642,7 @@ func (ut *UnifiedTokenizer) handleGetActivity(w http.ResponseWriter, r *http.Req
 }
 
 func (ut *UnifiedTokenizer) handleSearchTokens(w http.ResponseWriter, r *http.Request) {
-    if !ut.authenticateAPIRequest(r) {
-        w.WriteHeader(http.StatusUnauthorized)
-        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
-        return
-    }
+    // Permission check is handled by requirePermission middleware
     
     var req struct {
         LastFour  string `json:"last_four,omitempty"`
@@ -1755,20 +1778,442 @@ func (ut *UnifiedTokenizer) corsMiddleware(next http.Handler) http.Handler {
     })
 }
 
+// Authentication handlers
+
+func (ut *UnifiedTokenizer) handleLogin(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "POST" {
+        w.WriteHeader(http.StatusMethodNotAllowed)
+        return
+    }
+    
+    var authReq AuthRequest
+    if err := json.NewDecoder(r.Body).Decode(&authReq); err != nil {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+        return
+    }
+    
+    // Authenticate user
+    user, err := ut.authenticateUser(authReq.Username, authReq.Password)
+    if err != nil {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+        return
+    }
+    
+    // Get client IP
+    ipAddress := r.RemoteAddr
+    if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+        ipAddress = strings.Split(forwarded, ",")[0]
+    }
+    
+    // Create session
+    session, err := ut.createSession(user, ipAddress, r.UserAgent())
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create session"})
+        return
+    }
+    
+    // Set session cookie
+    http.SetCookie(w, &http.Cookie{
+        Name:     "session_id",
+        Value:    session.SessionID,
+        Path:     "/",
+        HttpOnly: true,
+        Secure:   false, // Set to true in production with HTTPS
+        SameSite: http.SameSiteLaxMode,
+        Expires:  session.ExpiresAt,
+    })
+    
+    // Return auth response
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(AuthResponse{
+        SessionID: session.SessionID,
+        User:      *user,
+        ExpiresAt: session.ExpiresAt,
+    })
+}
+
+func (ut *UnifiedTokenizer) handleLogout(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "POST" {
+        w.WriteHeader(http.StatusMethodNotAllowed)
+        return
+    }
+    
+    // Get session ID
+    var sessionID string
+    cookie, err := r.Cookie("session_id")
+    if err == nil {
+        sessionID = cookie.Value
+    }
+    
+    if sessionID == "" {
+        auth := r.Header.Get("Authorization")
+        if strings.HasPrefix(auth, "Bearer ") {
+            sessionID = strings.TrimPrefix(auth, "Bearer ")
+        }
+    }
+    
+    if sessionID != "" {
+        // Invalidate session
+        ut.db.Exec(`
+            UPDATE user_sessions 
+            SET is_active = FALSE 
+            WHERE session_id = ?
+        `, sessionID)
+    }
+    
+    // Clear cookie
+    http.SetCookie(w, &http.Cookie{
+        Name:     "session_id",
+        Value:    "",
+        Path:     "/",
+        HttpOnly: true,
+        MaxAge:   -1,
+    })
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]string{"message": "Logged out successfully"})
+}
+
+func (ut *UnifiedTokenizer) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "GET" {
+        w.WriteHeader(http.StatusMethodNotAllowed)
+        return
+    }
+    
+    // Get session ID
+    var sessionID string
+    cookie, err := r.Cookie("session_id")
+    if err == nil {
+        sessionID = cookie.Value
+    }
+    
+    if sessionID == "" {
+        auth := r.Header.Get("Authorization")
+        if strings.HasPrefix(auth, "Bearer ") {
+            sessionID = strings.TrimPrefix(auth, "Bearer ")
+        }
+    }
+    
+    if sessionID == "" {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Authentication required"})
+        return
+    }
+    
+    // Validate session
+    session, err := ut.validateSession(sessionID)
+    if err != nil {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+        return
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(session.User)
+}
+
+// User management handlers
+
+func (ut *UnifiedTokenizer) handleListUsers(w http.ResponseWriter, r *http.Request) {
+    rows, err := ut.db.Query(`
+        SELECT user_id, username, email, full_name, role, permissions, 
+               is_active, created_at, last_login_at
+        FROM users
+        ORDER BY created_at DESC
+    `)
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Database error"})
+        return
+    }
+    defer rows.Close()
+    
+    var users []User
+    for rows.Next() {
+        var user User
+        var permissionsJSON []byte
+        var lastLoginAt sql.NullTime
+        
+        err := rows.Scan(&user.UserID, &user.Username, &user.Email, &user.FullName,
+            &user.Role, &permissionsJSON, &user.IsActive, &user.CreatedAt, &lastLoginAt)
+        if err != nil {
+            continue
+        }
+        
+        json.Unmarshal(permissionsJSON, &user.Permissions)
+        if lastLoginAt.Valid {
+            user.LastLoginAt = &lastLoginAt.Time
+        }
+        
+        users = append(users, user)
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "users": users,
+        "total": len(users),
+    })
+}
+
+func (ut *UnifiedTokenizer) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+    var req struct {
+        Username    string   `json:"username"`
+        Email       string   `json:"email"`
+        Password    string   `json:"password"`
+        FullName    string   `json:"full_name"`
+        Role        string   `json:"role"`
+        Permissions []string `json:"permissions"`
+    }
+    
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+        return
+    }
+    
+    // Validate required fields
+    if req.Username == "" || req.Email == "" || req.Password == "" {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "username, email, and password are required"})
+        return
+    }
+    
+    // Validate role
+    if req.Role == "" {
+        req.Role = RoleViewer
+    }
+    if req.Role != RoleAdmin && req.Role != RoleOperator && req.Role != RoleViewer {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Invalid role"})
+        return
+    }
+    
+    // Hash password
+    passwordHash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Failed to hash password"})
+        return
+    }
+    
+    // Set default permissions based on role if not provided
+    if len(req.Permissions) == 0 {
+        switch req.Role {
+        case RoleAdmin:
+            req.Permissions = []string{PermSystemAdmin}
+        case RoleOperator:
+            req.Permissions = []string{
+                PermTokensRead, PermTokensWrite, PermTokensDelete,
+                PermActivityRead, PermStatsRead,
+            }
+        case RoleViewer:
+            req.Permissions = []string{
+                PermTokensRead, PermActivityRead, PermStatsRead,
+            }
+        }
+    }
+    
+    userID := "usr_" + generateRandomID()
+    permissionsJSON, _ := json.Marshal(req.Permissions)
+    createdBy := r.Header.Get("X-User-ID")
+    
+    _, err = ut.db.Exec(`
+        INSERT INTO users (
+            user_id, username, email, password_hash, full_name,
+            role, permissions, is_active, is_email_verified, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, FALSE, ?)
+    `, userID, req.Username, req.Email, string(passwordHash), req.FullName,
+       req.Role, permissionsJSON, createdBy)
+    
+    if err != nil {
+        if strings.Contains(err.Error(), "Duplicate") {
+            w.WriteHeader(http.StatusConflict)
+            json.NewEncoder(w).Encode(map[string]string{"error": "Username or email already exists"})
+        } else {
+            w.WriteHeader(http.StatusInternalServerError)
+            json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create user"})
+        }
+        return
+    }
+    
+    // Return created user
+    user := User{
+        UserID:      userID,
+        Username:    req.Username,
+        Email:       req.Email,
+        FullName:    req.FullName,
+        Role:        req.Role,
+        Permissions: req.Permissions,
+        IsActive:    true,
+        CreatedAt:   time.Now(),
+    }
+    
+    w.WriteHeader(http.StatusCreated)
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(user)
+}
+
+func (ut *UnifiedTokenizer) handleGetUser(w http.ResponseWriter, r *http.Request) {
+    username := strings.TrimPrefix(r.URL.Path, "/api/v1/users/")
+    
+    var user User
+    var permissionsJSON []byte
+    var lastLoginAt sql.NullTime
+    
+    err := ut.db.QueryRow(`
+        SELECT user_id, username, email, full_name, role, permissions,
+               is_active, created_at, last_login_at
+        FROM users
+        WHERE username = ? OR user_id = ?
+    `, username, username).Scan(
+        &user.UserID, &user.Username, &user.Email, &user.FullName,
+        &user.Role, &permissionsJSON, &user.IsActive, &user.CreatedAt, &lastLoginAt,
+    )
+    
+    if err == sql.ErrNoRows {
+        w.WriteHeader(http.StatusNotFound)
+        json.NewEncoder(w).Encode(map[string]string{"error": "User not found"})
+        return
+    } else if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Database error"})
+        return
+    }
+    
+    json.Unmarshal(permissionsJSON, &user.Permissions)
+    if lastLoginAt.Valid {
+        user.LastLoginAt = &lastLoginAt.Time
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(user)
+}
+
+func (ut *UnifiedTokenizer) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+    username := strings.TrimPrefix(r.URL.Path, "/api/v1/users/")
+    
+    var req struct {
+        Email       *string   `json:"email"`
+        FullName    *string   `json:"full_name"`
+        Role        *string   `json:"role"`
+        Permissions *[]string `json:"permissions"`
+        IsActive    *bool     `json:"is_active"`
+    }
+    
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+        return
+    }
+    
+    // Build update query dynamically
+    updates := []string{}
+    params := []interface{}{}
+    
+    if req.Email != nil {
+        updates = append(updates, "email = ?")
+        params = append(params, *req.Email)
+    }
+    if req.FullName != nil {
+        updates = append(updates, "full_name = ?")
+        params = append(params, *req.FullName)
+    }
+    if req.Role != nil {
+        updates = append(updates, "role = ?")
+        params = append(params, *req.Role)
+    }
+    if req.Permissions != nil {
+        permissionsJSON, _ := json.Marshal(*req.Permissions)
+        updates = append(updates, "permissions = ?")
+        params = append(params, permissionsJSON)
+    }
+    if req.IsActive != nil {
+        updates = append(updates, "is_active = ?")
+        params = append(params, *req.IsActive)
+    }
+    
+    if len(updates) == 0 {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "No fields to update"})
+        return
+    }
+    
+    updates = append(updates, "updated_at = NOW()")
+    params = append(params, username, username) // for WHERE clause
+    
+    query := fmt.Sprintf("UPDATE users SET %s WHERE username = ? OR user_id = ?", strings.Join(updates, ", "))
+    result, err := ut.db.Exec(query, params...)
+    
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Failed to update user"})
+        return
+    }
+    
+    rowsAffected, _ := result.RowsAffected()
+    if rowsAffected == 0 {
+        w.WriteHeader(http.StatusNotFound)
+        json.NewEncoder(w).Encode(map[string]string{"error": "User not found"})
+        return
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]string{"message": "User updated successfully"})
+}
+
+func (ut *UnifiedTokenizer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+    username := strings.TrimPrefix(r.URL.Path, "/api/v1/users/")
+    
+    // Don't allow deleting the default admin
+    if username == "admin" || username == "usr_admin_default" {
+        w.WriteHeader(http.StatusForbidden)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Cannot delete default admin user"})
+        return
+    }
+    
+    // Check if user exists
+    var userID string
+    err := ut.db.QueryRow("SELECT user_id FROM users WHERE username = ? OR user_id = ?", username, username).Scan(&userID)
+    if err == sql.ErrNoRows {
+        w.WriteHeader(http.StatusNotFound)
+        json.NewEncoder(w).Encode(map[string]string{"error": "User not found"})
+        return
+    }
+    
+    // Delete user (cascades to sessions and api_keys)
+    _, err = ut.db.Exec("DELETE FROM users WHERE user_id = ?", userID)
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Failed to delete user"})
+        return
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]string{"message": "User deleted successfully"})
+}
+
 func (ut *UnifiedTokenizer) startAPIServer() {
     mux := http.NewServeMux()
     
-    // Health check and version
+    // Health check and version (no auth required)
     mux.HandleFunc("/health", ut.handleAPIHealth)
     mux.HandleFunc("/api/v1/version", ut.handleGetVersion)
     
-    // API Key management (admin only)
+    // Authentication endpoints (no auth required)
+    mux.HandleFunc("/api/v1/auth/login", ut.handleLogin)
+    mux.HandleFunc("/api/v1/auth/logout", ut.handleLogout)
+    mux.HandleFunc("/api/v1/auth/me", ut.handleGetCurrentUser)
+    
+    // API Key management (requires permissions)
     mux.HandleFunc("/api/v1/api-keys", func(w http.ResponseWriter, r *http.Request) {
         switch r.Method {
         case "GET":
-            ut.handleListAPIKeys(w, r)
+            ut.requirePermission(ut.handleListAPIKeys, PermAPIKeysRead)(w, r)
         case "POST":
-            ut.handleCreateAPIKey(w, r)
+            ut.requirePermission(ut.handleCreateAPIKey, PermAPIKeysWrite)(w, r)
         default:
             w.WriteHeader(http.StatusMethodNotAllowed)
         }
@@ -1777,17 +2222,17 @@ func (ut *UnifiedTokenizer) startAPIServer() {
     mux.HandleFunc("/api/v1/api-keys/", func(w http.ResponseWriter, r *http.Request) {
         switch r.Method {
         case "DELETE":
-            ut.handleRevokeAPIKey(w, r)
+            ut.requirePermission(ut.handleRevokeAPIKey, PermAPIKeysDelete)(w, r)
         default:
             w.WriteHeader(http.StatusMethodNotAllowed)
         }
     })
     
-    // Token management
+    // Token management (requires permissions)
     mux.HandleFunc("/api/v1/tokens", func(w http.ResponseWriter, r *http.Request) {
         switch r.Method {
         case "GET":
-            ut.handleAPIListTokens(w, r)
+            ut.requirePermission(ut.handleAPIListTokens, PermTokensRead)(w, r)
         default:
             w.WriteHeader(http.StatusMethodNotAllowed)
         }
@@ -1795,7 +2240,7 @@ func (ut *UnifiedTokenizer) startAPIServer() {
     
     mux.HandleFunc("/api/v1/tokens/search", func(w http.ResponseWriter, r *http.Request) {
         if r.Method == "POST" {
-            ut.handleSearchTokens(w, r)
+            ut.requirePermission(ut.handleSearchTokens, PermTokensRead)(w, r)
         } else {
             w.WriteHeader(http.StatusMethodNotAllowed)
         }
@@ -1805,9 +2250,9 @@ func (ut *UnifiedTokenizer) startAPIServer() {
     mux.HandleFunc("/api/v1/tokens/", func(w http.ResponseWriter, r *http.Request) {
         switch r.Method {
         case "GET":
-            ut.handleAPIGetToken(w, r)
+            ut.requirePermission(ut.handleAPIGetToken, PermTokensRead)(w, r)
         case "DELETE":
-            ut.handleAPIRevokeToken(w, r)
+            ut.requirePermission(ut.handleAPIRevokeToken, PermTokensDelete)(w, r)
         default:
             w.WriteHeader(http.StatusMethodNotAllowed)
         }
@@ -1816,14 +2261,39 @@ func (ut *UnifiedTokenizer) startAPIServer() {
     // Activity monitoring
     mux.HandleFunc("/api/v1/activity", func(w http.ResponseWriter, r *http.Request) {
         if r.Method == "GET" {
-            ut.handleGetActivity(w, r)
+            ut.requirePermission(ut.handleGetActivity, PermActivityRead)(w, r)
         } else {
             w.WriteHeader(http.StatusMethodNotAllowed)
         }
     })
     
     // Stats
-    mux.HandleFunc("/api/v1/stats", ut.handleAPIStats)
+    mux.HandleFunc("/api/v1/stats", ut.requirePermission(ut.handleAPIStats, PermStatsRead))
+    
+    // User management endpoints
+    mux.HandleFunc("/api/v1/users", func(w http.ResponseWriter, r *http.Request) {
+        switch r.Method {
+        case "GET":
+            ut.requirePermission(ut.handleListUsers, PermUsersRead)(w, r)
+        case "POST":
+            ut.requirePermission(ut.handleCreateUser, PermUsersWrite)(w, r)
+        default:
+            w.WriteHeader(http.StatusMethodNotAllowed)
+        }
+    })
+    
+    mux.HandleFunc("/api/v1/users/", func(w http.ResponseWriter, r *http.Request) {
+        switch r.Method {
+        case "GET":
+            ut.requirePermission(ut.handleGetUser, PermUsersRead)(w, r)
+        case "PUT":
+            ut.requirePermission(ut.handleUpdateUser, PermUsersWrite)(w, r)
+        case "DELETE":
+            ut.requirePermission(ut.handleDeleteUser, PermUsersDelete)(w, r)
+        default:
+            w.WriteHeader(http.StatusMethodNotAllowed)
+        }
+    })
     
     // Key management endpoints (if KEK/DEK is enabled)
     if ut.useKEKDEK {
@@ -1861,11 +2331,7 @@ func (ut *UnifiedTokenizer) startAPIServer() {
 // Key management API handlers
 
 func (ut *UnifiedTokenizer) handleKeyStatus(w http.ResponseWriter, r *http.Request) {
-    if !ut.authenticateAPIRequest(r) {
-        w.WriteHeader(http.StatusUnauthorized)
-        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
-        return
-    }
+    // Permission check is handled by requirePermission middleware
     
     type KeyInfo struct {
         KeyID      string    `json:"key_id"`
@@ -1917,11 +2383,7 @@ func (ut *UnifiedTokenizer) handleKeyStatus(w http.ResponseWriter, r *http.Reque
 }
 
 func (ut *UnifiedTokenizer) handleKeyRotation(w http.ResponseWriter, r *http.Request) {
-    if !ut.authenticateAPIRequest(r) {
-        w.WriteHeader(http.StatusUnauthorized)
-        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
-        return
-    }
+    // Permission check is handled by requirePermission middleware
     
     // Check if KEK/DEK is enabled
     if !ut.useKEKDEK || ut.keyManager == nil {
@@ -2019,11 +2481,7 @@ func (ut *UnifiedTokenizer) handleKeyRotation(w http.ResponseWriter, r *http.Req
 }
 
 func (ut *UnifiedTokenizer) handleKeyRotationHistory(w http.ResponseWriter, r *http.Request) {
-    if !ut.authenticateAPIRequest(r) {
-        w.WriteHeader(http.StatusUnauthorized)
-        json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
-        return
-    }
+    // Permission check is handled by requirePermission middleware
     
     // Get query parameters
     limit := 50
@@ -2592,6 +3050,325 @@ func generateRandomID() string {
     return base64.URLEncoding.EncodeToString(b)
 }
 
+// User authentication methods
+
+func (ut *UnifiedTokenizer) createDefaultAdminUser() error {
+    // Check if admin user already exists
+    var count int
+    err := ut.db.QueryRow("SELECT COUNT(*) FROM users WHERE username = 'admin'").Scan(&count)
+    if err != nil {
+        return err
+    }
+    
+    if count > 0 {
+        return nil // Admin already exists
+    }
+    
+    // Generate default password hash for "admin123"
+    passwordHash, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+    if err != nil {
+        return err
+    }
+    
+    userID := "usr_admin_default"
+    permissions := []string{PermSystemAdmin}
+    permissionsJSON, _ := json.Marshal(permissions)
+    
+    _, err = ut.db.Exec(`
+        INSERT INTO users (
+            user_id, username, email, password_hash, full_name, 
+            role, permissions, is_active, is_email_verified
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, userID, "admin", "admin@tokenshield.local", string(passwordHash), 
+       "Default Administrator", RoleAdmin, permissionsJSON, true, true)
+    
+    if err != nil {
+        return fmt.Errorf("failed to create default admin user: %v", err)
+    }
+    
+    log.Printf("Created default admin user (username: admin, password: admin123) - PLEASE CHANGE PASSWORD!")
+    return nil
+}
+
+func (ut *UnifiedTokenizer) authenticateUser(username, password string) (*User, error) {
+    var user User
+    var passwordHash string
+    var permissionsJSON []byte
+    var lastLoginAt sql.NullTime
+    
+    err := ut.db.QueryRow(`
+        SELECT user_id, username, email, password_hash, full_name, 
+               role, permissions, is_active, created_at, last_login_at
+        FROM users 
+        WHERE username = ? OR email = ?
+    `, username, username).Scan(
+        &user.UserID, &user.Username, &user.Email, &passwordHash,
+        &user.FullName, &user.Role, &permissionsJSON, &user.IsActive,
+        &user.CreatedAt, &lastLoginAt,
+    )
+    
+    if err == sql.ErrNoRows {
+        return nil, errors.New("invalid username or password")
+    } else if err != nil {
+        return nil, err
+    }
+    
+    // Check if user is active
+    if !user.IsActive {
+        return nil, errors.New("user account is disabled")
+    }
+    
+    // Verify password
+    err = bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password))
+    if err != nil {
+        // Increment failed login attempts
+        ut.db.Exec(`
+            UPDATE users 
+            SET failed_login_attempts = failed_login_attempts + 1 
+            WHERE user_id = ?
+        `, user.UserID)
+        return nil, errors.New("invalid username or password")
+    }
+    
+    // Parse permissions
+    json.Unmarshal(permissionsJSON, &user.Permissions)
+    
+    if lastLoginAt.Valid {
+        user.LastLoginAt = &lastLoginAt.Time
+    }
+    
+    // Update last login time and reset failed attempts
+    ut.db.Exec(`
+        UPDATE users 
+        SET last_login_at = NOW(), failed_login_attempts = 0 
+        WHERE user_id = ?
+    `, user.UserID)
+    
+    return &user, nil
+}
+
+func (ut *UnifiedTokenizer) createSession(user *User, ipAddress, userAgent string) (*UserSession, error) {
+    sessionID := "sess_" + generateRandomID()
+    expiresAt := time.Now().Add(24 * time.Hour) // 24 hour sessions
+    
+    _, err := ut.db.Exec(`
+        INSERT INTO user_sessions (
+            session_id, user_id, ip_address, user_agent, 
+            created_at, expires_at, last_activity_at, is_active
+        ) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), TRUE)
+    `, sessionID, user.UserID, ipAddress, userAgent, expiresAt)
+    
+    if err != nil {
+        return nil, fmt.Errorf("failed to create session: %v", err)
+    }
+    
+    session := &UserSession{
+        SessionID:    sessionID,
+        UserID:       user.UserID,
+        User:         user,
+        IPAddress:    ipAddress,
+        UserAgent:    userAgent,
+        CreatedAt:    time.Now(),
+        ExpiresAt:    expiresAt,
+        LastActivity: time.Now(),
+    }
+    
+    return session, nil
+}
+
+func (ut *UnifiedTokenizer) validateSession(sessionID string) (*UserSession, error) {
+    var session UserSession
+    var user User
+    var permissionsJSON []byte
+    var lastLoginAt sql.NullTime
+    
+    err := ut.db.QueryRow(`
+        SELECT 
+            s.session_id, s.user_id, s.ip_address, s.user_agent,
+            s.created_at, s.expires_at, s.last_activity_at,
+            u.username, u.email, u.full_name, u.role, u.permissions,
+            u.is_active, u.created_at, u.last_login_at
+        FROM user_sessions s
+        JOIN users u ON s.user_id = u.user_id
+        WHERE s.session_id = ? 
+          AND s.is_active = TRUE 
+          AND s.expires_at > NOW()
+          AND u.is_active = TRUE
+    `, sessionID).Scan(
+        &session.SessionID, &session.UserID, &session.IPAddress, &session.UserAgent,
+        &session.CreatedAt, &session.ExpiresAt, &session.LastActivity,
+        &user.Username, &user.Email, &user.FullName, &user.Role, &permissionsJSON,
+        &user.IsActive, &user.CreatedAt, &lastLoginAt,
+    )
+    
+    if err == sql.ErrNoRows {
+        return nil, errors.New("invalid or expired session")
+    } else if err != nil {
+        return nil, err
+    }
+    
+    // Update last activity
+    ut.db.Exec(`
+        UPDATE user_sessions 
+        SET last_activity_at = NOW() 
+        WHERE session_id = ?
+    `, sessionID)
+    
+    // Parse user data
+    user.UserID = session.UserID
+    json.Unmarshal(permissionsJSON, &user.Permissions)
+    if lastLoginAt.Valid {
+        user.LastLoginAt = &lastLoginAt.Time
+    }
+    
+    session.User = &user
+    return &session, nil
+}
+
+func (ut *UnifiedTokenizer) hasPermission(user *User, permission string) bool {
+    // System admin has all permissions
+    for _, p := range user.Permissions {
+        if p == PermSystemAdmin || p == permission {
+            return true
+        }
+    }
+    
+    // Check role-based permissions
+    switch user.Role {
+    case RoleAdmin:
+        return true // Admin has all permissions
+    case RoleOperator:
+        // Operators can read/write/delete tokens and view activity
+        operatorPerms := []string{
+            PermTokensRead, PermTokensWrite, PermTokensDelete,
+            PermActivityRead, PermStatsRead,
+        }
+        for _, p := range operatorPerms {
+            if p == permission {
+                return true
+            }
+        }
+    case RoleViewer:
+        // Viewers have read-only access
+        viewerPerms := []string{
+            PermTokensRead, PermActivityRead, PermStatsRead,
+        }
+        for _, p := range viewerPerms {
+            if p == permission {
+                return true
+            }
+        }
+    }
+    
+    return false
+}
+
+func (ut *UnifiedTokenizer) requirePermission(handler http.HandlerFunc, permission string) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        // Check for API key first (backward compatibility)
+        apiKey := r.Header.Get("X-API-Key")
+        if apiKey != "" {
+            // Validate API key
+            var userID sql.NullString
+            var isActive bool
+            err := ut.db.QueryRow(`
+                SELECT user_id, is_active FROM api_keys 
+                WHERE api_key = ?
+            `, apiKey).Scan(&userID, &isActive)
+            
+            if err == nil && isActive {
+                // Update last used timestamp
+                ut.db.Exec("UPDATE api_keys SET last_used_at = NOW() WHERE api_key = ?", apiKey)
+                
+                // If API key has associated user, check their permissions
+                if userID.Valid && userID.String != "" {
+                    var user User
+                    var permissionsJSON []byte
+                    err := ut.db.QueryRow(`
+                        SELECT user_id, username, email, full_name, role, permissions, is_active
+                        FROM users WHERE user_id = ? AND is_active = TRUE
+                    `, userID.String).Scan(
+                        &user.UserID, &user.Username, &user.Email, &user.FullName,
+                        &user.Role, &permissionsJSON, &user.IsActive,
+                    )
+                    
+                    if err == nil {
+                        json.Unmarshal(permissionsJSON, &user.Permissions)
+                        if ut.hasPermission(&user, permission) {
+                            r.Header.Set("X-User-ID", user.UserID)
+                            r.Header.Set("X-Username", user.Username)
+                            handler(w, r)
+                            return
+                        }
+                    }
+                } else {
+                    // Legacy API key without user - allow for backward compatibility
+                    // but only for certain permissions
+                    legacyAllowedPerms := []string{
+                        PermTokensRead, PermTokensWrite, PermActivityRead, PermStatsRead,
+                    }
+                    for _, p := range legacyAllowedPerms {
+                        if p == permission {
+                            r.Header.Set("X-User-ID", "api_key_" + apiKey[:8])
+                            r.Header.Set("X-Username", "API Key User")
+                            handler(w, r)
+                            return
+                        }
+                    }
+                }
+                
+                w.WriteHeader(http.StatusForbidden)
+                json.NewEncoder(w).Encode(map[string]string{"error": "Insufficient permissions"})
+                return
+            }
+        }
+        
+        // Check for session cookie or Authorization header
+        var sessionID string
+        
+        // Try cookie first
+        cookie, err := r.Cookie("session_id")
+        if err == nil {
+            sessionID = cookie.Value
+        }
+        
+        // Try Authorization header
+        if sessionID == "" {
+            auth := r.Header.Get("Authorization")
+            if strings.HasPrefix(auth, "Bearer ") {
+                sessionID = strings.TrimPrefix(auth, "Bearer ")
+            }
+        }
+        
+        if sessionID == "" {
+            w.WriteHeader(http.StatusUnauthorized)
+            json.NewEncoder(w).Encode(map[string]string{"error": "Authentication required"})
+            return
+        }
+        
+        // Validate session
+        session, err := ut.validateSession(sessionID)
+        if err != nil {
+            w.WriteHeader(http.StatusUnauthorized)
+            json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+            return
+        }
+        
+        // Check permission
+        if !ut.hasPermission(session.User, permission) {
+            w.WriteHeader(http.StatusForbidden)
+            json.NewEncoder(w).Encode(map[string]string{"error": "Insufficient permissions"})
+            return
+        }
+        
+        // Add user to request context
+        r.Header.Set("X-User-ID", session.User.UserID)
+        r.Header.Set("X-Username", session.User.Username)
+        
+        handler(w, r)
+    }
+}
+
 func main() {
     log.SetFlags(log.LstdFlags | log.Lshortfile)
     
@@ -2606,6 +3383,11 @@ func main() {
     log.Printf("App Endpoint: %s", ut.appEndpoint)
     log.Printf("Token Format: %s", ut.tokenFormat)
     log.Printf("KEK/DEK Encryption: %v", ut.useKEKDEK)
+    
+    // Create default admin user if needed
+    if err := ut.createDefaultAdminUser(); err != nil {
+        log.Printf("Warning: Failed to create default admin user: %v", err)
+    }
     
     // Start all three servers
     go ut.startHTTPServer()

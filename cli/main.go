@@ -15,11 +15,12 @@ import (
 
 // Global configuration
 var (
-	cfgFile   string
-	apiURL    string
-	apiKey    string
+	cfgFile     string
+	apiURL      string
+	apiKey      string
 	adminSecret string
-	verbose   bool
+	sessionID   string
+	verbose     bool
 )
 
 // API client
@@ -27,14 +28,39 @@ type TokenShieldClient struct {
 	BaseURL     string
 	APIKey      string
 	AdminSecret string
+	SessionID   string
 	HTTPClient  *http.Client
 }
 
-func NewClient(baseURL, apiKey, adminSecret string) *TokenShieldClient {
+// Auth structures
+type AuthRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type AuthResponse struct {
+	SessionID string    `json:"session_id"`
+	User      User      `json:"user"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type User struct {
+	UserID      string   `json:"user_id"`
+	Username    string   `json:"username"`
+	Email       string   `json:"email"`
+	FullName    string   `json:"full_name"`
+	Role        string   `json:"role"`
+	Permissions []string `json:"permissions"`
+	IsActive    bool     `json:"is_active"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func NewClient(baseURL, apiKey, adminSecret, sessionID string) *TokenShieldClient {
 	return &TokenShieldClient{
 		BaseURL:     strings.TrimRight(baseURL, "/"),
 		APIKey:      apiKey,
 		AdminSecret: adminSecret,
+		SessionID:   sessionID,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -48,7 +74,10 @@ func (c *TokenShieldClient) makeRequest(method, endpoint string, body io.Reader)
 		return nil, err
 	}
 
-	if c.APIKey != "" {
+	// Use session if available, otherwise fall back to API key
+	if c.SessionID != "" {
+		req.Header.Set("Authorization", "Bearer "+c.SessionID)
+	} else if c.APIKey != "" {
 		req.Header.Set("X-API-Key", c.APIKey)
 	}
 	if c.AdminSecret != "" {
@@ -79,7 +108,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		client := NewClient(apiURL, apiKey, adminSecret)
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
 		resp, err := client.makeRequest("GET", "/api/v1/version", nil)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -119,7 +148,7 @@ var tokenListCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		limit, _ := cmd.Flags().GetInt("limit")
 		
-		client := NewClient(apiURL, apiKey, adminSecret)
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
 		endpoint := fmt.Sprintf("/api/v1/tokens?limit=%d", limit)
 		resp, err := client.makeRequest("GET", endpoint, nil)
 		if err != nil {
@@ -188,7 +217,7 @@ var tokenSearchCmd = &cobra.Command{
 		
 		reqBody, _ := json.Marshal(searchReq)
 		
-		client := NewClient(apiURL, apiKey, adminSecret)
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
 		resp, err := client.makeRequest("POST", "/api/v1/tokens/search", strings.NewReader(string(reqBody)))
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -238,7 +267,7 @@ var tokenRevokeCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		token := args[0]
 		
-		client := NewClient(apiURL, apiKey, adminSecret)
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
 		endpoint := fmt.Sprintf("/api/v1/tokens/%s", token)
 		resp, err := client.makeRequest("DELETE", endpoint, nil)
 		if err != nil {
@@ -269,7 +298,7 @@ var apiKeyListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all API keys",
 	Run: func(cmd *cobra.Command, args []string) {
-		client := NewClient(apiURL, apiKey, adminSecret)
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
 		resp, err := client.makeRequest("GET", "/api/v1/api-keys", nil)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -322,7 +351,7 @@ var apiKeyCreateCmd = &cobra.Command{
 		
 		reqBody, _ := json.Marshal(createReq)
 		
-		client := NewClient(apiURL, apiKey, adminSecret)
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
 		resp, err := client.makeRequest("POST", "/api/v1/api-keys", strings.NewReader(string(reqBody)))
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -355,7 +384,7 @@ var activityCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		limit, _ := cmd.Flags().GetInt("limit")
 		
-		client := NewClient(apiURL, apiKey, adminSecret)
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
 		endpoint := fmt.Sprintf("/api/v1/activity?limit=%d", limit)
 		resp, err := client.makeRequest("GET", endpoint, nil)
 		if err != nil {
@@ -410,7 +439,7 @@ var statsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show system statistics",
 	Run: func(cmd *cobra.Command, args []string) {
-		client := NewClient(apiURL, apiKey, adminSecret)
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
 		resp, err := client.makeRequest("GET", "/api/v1/stats", nil)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -438,6 +467,278 @@ var statsCmd = &cobra.Command{
 				fmt.Printf("  %s: %.0f\n", reqType, count.(float64))
 			}
 		}
+	},
+}
+
+// Login command
+var loginCmd = &cobra.Command{
+	Use:   "login",
+	Short: "Login to TokenShield",
+	Long:  `Authenticate with TokenShield using username and password`,
+	Run: func(cmd *cobra.Command, args []string) {
+		username, _ := cmd.Flags().GetString("username")
+		password, _ := cmd.Flags().GetString("password")
+		
+		if username == "" {
+			fmt.Print("Username: ")
+			fmt.Scanln(&username)
+		}
+		
+		if password == "" {
+			fmt.Print("Password: ")
+			// TODO: Hide password input
+			fmt.Scanln(&password)
+		}
+		
+		client := NewClient(apiURL, "", "", "")
+		
+		authReq := AuthRequest{
+			Username: username,
+			Password: password,
+		}
+		
+		body, _ := json.Marshal(authReq)
+		resp, err := client.makeRequest("POST", "/api/v1/auth/login", strings.NewReader(string(body)))
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != 200 {
+			var errResp map[string]string
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			fmt.Printf("Login failed: %s\n", errResp["error"])
+			os.Exit(1)
+		}
+		
+		var authResp AuthResponse
+		if err := json.NewDecoder(resp.Body).Decode(&authResp); err != nil {
+			fmt.Printf("Error parsing response: %v\n", err)
+			os.Exit(1)
+		}
+		
+		// Save session to config
+		viper.Set("session_id", authResp.SessionID)
+		viper.Set("session_expires", authResp.ExpiresAt.Format(time.RFC3339))
+		viper.Set("username", authResp.User.Username)
+		if err := viper.WriteConfig(); err != nil {
+			// Try to create config file
+			home, _ := os.UserHomeDir()
+			configPath := home + "/.tokenshield.yaml"
+			viper.SetConfigFile(configPath)
+			viper.WriteConfig()
+		}
+		
+		fmt.Printf("Successfully logged in as %s (%s)\n", authResp.User.Username, authResp.User.Role)
+		fmt.Printf("Session expires: %s\n", authResp.ExpiresAt.Local().Format("2006-01-02 15:04:05"))
+	},
+}
+
+// Logout command
+var logoutCmd = &cobra.Command{
+	Use:   "logout",
+	Short: "Logout from TokenShield",
+	Long:  `Invalidate the current session`,
+	Run: func(cmd *cobra.Command, args []string) {
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
+		
+		resp, err := client.makeRequest("POST", "/api/v1/auth/logout", nil)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		
+		// Clear session from config
+		viper.Set("session_id", "")
+		viper.Set("session_expires", "")
+		viper.Set("username", "")
+		viper.WriteConfig()
+		
+		fmt.Println("Successfully logged out")
+	},
+}
+
+// User management commands
+var userCmd = &cobra.Command{
+	Use:   "user",
+	Short: "User management commands",
+	Long:  `Commands for managing TokenShield users`,
+}
+
+var userListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List users",
+	Run: func(cmd *cobra.Command, args []string) {
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
+		
+		resp, err := client.makeRequest("GET", "/api/v1/users", nil)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != 200 {
+			var errResp map[string]string
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			fmt.Printf("Error: %s\n", errResp["error"])
+			os.Exit(1)
+		}
+		
+		var result struct {
+			Users []User `json:"users"`
+			Total int    `json:"total"`
+		}
+		
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			fmt.Printf("Error parsing response: %v\n", err)
+			os.Exit(1)
+		}
+		
+		fmt.Printf("Users (%d total):\n\n", result.Total)
+		fmt.Printf("%-20s %-15s %-25s %-10s %-10s\n", "Username", "Role", "Email", "Active", "Created")
+		fmt.Println(strings.Repeat("-", 85))
+		
+		for _, user := range result.Users {
+			active := "Yes"
+			if !user.IsActive {
+				active = "No"
+			}
+			fmt.Printf("%-20s %-15s %-25s %-10s %-10s\n",
+				truncateString(user.Username, 20),
+				user.Role,
+				truncateString(user.Email, 25),
+				active,
+				user.CreatedAt.Format("2006-01-02"),
+			)
+		}
+	},
+}
+
+var userCreateCmd = &cobra.Command{
+	Use:   "create",
+	Short: "Create a new user",
+	Run: func(cmd *cobra.Command, args []string) {
+		username, _ := cmd.Flags().GetString("username")
+		email, _ := cmd.Flags().GetString("email")
+		password, _ := cmd.Flags().GetString("password")
+		fullName, _ := cmd.Flags().GetString("full-name")
+		role, _ := cmd.Flags().GetString("role")
+		
+		if username == "" || email == "" || password == "" {
+			fmt.Println("Error: username, email, and password are required")
+			os.Exit(1)
+		}
+		
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
+		
+		user := map[string]interface{}{
+			"username":  username,
+			"email":     email,
+			"password":  password,
+			"full_name": fullName,
+			"role":      role,
+		}
+		
+		body, _ := json.Marshal(user)
+		resp, err := client.makeRequest("POST", "/api/v1/users", strings.NewReader(string(body)))
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != 201 {
+			var errResp map[string]string
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			fmt.Printf("Error: %s\n", errResp["error"])
+			os.Exit(1)
+		}
+		
+		var newUser User
+		if err := json.NewDecoder(resp.Body).Decode(&newUser); err != nil {
+			fmt.Printf("Error parsing response: %v\n", err)
+			os.Exit(1)
+		}
+		
+		fmt.Printf("User created successfully:\n")
+		fmt.Printf("  ID: %s\n", newUser.UserID)
+		fmt.Printf("  Username: %s\n", newUser.Username)
+		fmt.Printf("  Email: %s\n", newUser.Email)
+		fmt.Printf("  Role: %s\n", newUser.Role)
+	},
+}
+
+var userDeleteCmd = &cobra.Command{
+	Use:   "delete [username]",
+	Short: "Delete a user",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		username := args[0]
+		
+		force, _ := cmd.Flags().GetBool("force")
+		if !force {
+			fmt.Printf("Are you sure you want to delete user '%s'? (y/N): ", username)
+			var confirm string
+			fmt.Scanln(&confirm)
+			if confirm != "y" && confirm != "Y" {
+				fmt.Println("Cancelled")
+				return
+			}
+		}
+		
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
+		
+		resp, err := client.makeRequest("DELETE", "/api/v1/users/"+username, nil)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != 200 {
+			var errResp map[string]string
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			fmt.Printf("Error: %s\n", errResp["error"])
+			os.Exit(1)
+		}
+		
+		fmt.Printf("User '%s' deleted successfully\n", username)
+	},
+}
+
+var whoamiCmd = &cobra.Command{
+	Use:   "whoami",
+	Short: "Show current user information",
+	Run: func(cmd *cobra.Command, args []string) {
+		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
+		
+		resp, err := client.makeRequest("GET", "/api/v1/auth/me", nil)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != 200 {
+			fmt.Println("Not logged in")
+			os.Exit(1)
+		}
+		
+		var user User
+		if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+			fmt.Printf("Error parsing response: %v\n", err)
+			os.Exit(1)
+		}
+		
+		fmt.Printf("Current user:\n")
+		fmt.Printf("  Username: %s\n", user.Username)
+		fmt.Printf("  Email: %s\n", user.Email)
+		fmt.Printf("  Full Name: %s\n", user.FullName)
+		fmt.Printf("  Role: %s\n", user.Role)
+		fmt.Printf("  Permissions: %s\n", strings.Join(user.Permissions, ", "))
 	},
 }
 
@@ -491,6 +792,23 @@ func initConfig() {
 	if adminSecret == "" {
 		adminSecret = viper.GetString("admin_secret")
 	}
+	
+	// Load session from config
+	if sessionID == "" {
+		sessionID = viper.GetString("session_id")
+		// Check if session is expired
+		if expiresStr := viper.GetString("session_expires"); expiresStr != "" {
+			if expires, err := time.Parse(time.RFC3339, expiresStr); err == nil {
+				if time.Now().After(expires) {
+					// Session expired, clear it
+					sessionID = ""
+					viper.Set("session_id", "")
+					viper.Set("session_expires", "")
+					viper.Set("username", "")
+				}
+			}
+		}
+	}
 }
 
 func init() {
@@ -515,11 +833,31 @@ func init() {
 	
 	// Activity command flags
 	activityCmd.Flags().IntP("limit", "l", 50, "Maximum number of activities to show")
+	
+	// Login command flags
+	loginCmd.Flags().StringP("username", "u", "", "Username")
+	loginCmd.Flags().StringP("password", "p", "", "Password")
+	
+	// User command flags
+	userCreateCmd.Flags().String("username", "", "Username (required)")
+	userCreateCmd.Flags().String("email", "", "Email address (required)")
+	userCreateCmd.Flags().String("password", "", "Password (required)")
+	userCreateCmd.Flags().String("full-name", "", "Full name")
+	userCreateCmd.Flags().String("role", "viewer", "User role (admin, operator, viewer)")
+	userCreateCmd.MarkFlagRequired("username")
+	userCreateCmd.MarkFlagRequired("email")
+	userCreateCmd.MarkFlagRequired("password")
+	
+	userDeleteCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt")
 
 	// Add commands
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(loginCmd)
+	rootCmd.AddCommand(logoutCmd)
+	rootCmd.AddCommand(whoamiCmd)
 	rootCmd.AddCommand(tokenCmd)
 	rootCmd.AddCommand(apiKeyCmd)
+	rootCmd.AddCommand(userCmd)
 	rootCmd.AddCommand(activityCmd)
 	rootCmd.AddCommand(statsCmd)
 
@@ -529,6 +867,10 @@ func init() {
 
 	apiKeyCmd.AddCommand(apiKeyListCmd)
 	apiKeyCmd.AddCommand(apiKeyCreateCmd)
+	
+	userCmd.AddCommand(userListCmd)
+	userCmd.AddCommand(userCreateCmd)
+	userCmd.AddCommand(userDeleteCmd)
 }
 
 func main() {

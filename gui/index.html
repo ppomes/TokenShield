@@ -13,7 +13,7 @@
             <i class="fas fa-shield-alt"></i>
             <span>TokenShield Dashboard</span>
         </div>
-        <div class="nav-links">
+        <div class="nav-links" id="main-nav" style="display: none;">
             <a href="#dashboard" class="nav-link active" data-section="dashboard">
                 <i class="fas fa-tachometer-alt"></i> Dashboard
             </a>
@@ -22,6 +22,9 @@
             </a>
             <a href="#apikeys" class="nav-link" data-section="apikeys">
                 <i class="fas fa-key"></i> API Keys
+            </a>
+            <a href="#users" class="nav-link" data-section="users">
+                <i class="fas fa-users"></i> Users
             </a>
             <a href="#activity" class="nav-link" data-section="activity">
                 <i class="fas fa-chart-line"></i> Activity
@@ -37,12 +40,63 @@
             <span id="connection-status" class="status-indicator offline">
                 <i class="fas fa-circle"></i> Disconnected
             </span>
+            <div id="user-menu" class="user-dropdown" style="display: none;">
+                <button id="user-menu-btn" class="user-menu-button">
+                    <i class="fas fa-user-circle"></i>
+                    <span id="current-username">Not logged in</span>
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+                <div class="dropdown-content">
+                    <div class="dropdown-header">
+                        <span id="user-email">user@example.com</span>
+                        <span id="user-role" class="user-role-badge">Admin</span>
+                    </div>
+                    <div class="dropdown-divider"></div>
+                    <a href="#" id="profile-btn" class="dropdown-item">
+                        <i class="fas fa-user"></i> My Profile
+                    </a>
+                    <a href="#" id="settings-btn" class="dropdown-item">
+                        <i class="fas fa-cog"></i> Settings
+                    </a>
+                    <div class="dropdown-divider"></div>
+                    <a href="#" id="logout-btn" class="dropdown-item">
+                        <i class="fas fa-sign-out-alt"></i> Logout
+                    </a>
+                </div>
+            </div>
         </div>
     </nav>
 
     <main class="main-content">
+        <!-- Login Section -->
+        <section id="login-section" class="content-section active">
+            <div class="login-container">
+                <div class="login-card">
+                    <div class="login-header">
+                        <i class="fas fa-shield-alt"></i>
+                        <h1>TokenShield</h1>
+                        <p>Please sign in to continue</p>
+                    </div>
+                    <form id="login-form" class="login-form">
+                        <div class="form-group">
+                            <label for="username">Username</label>
+                            <input type="text" id="username" name="username" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="password">Password</label>
+                            <input type="password" id="password" name="password" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-full">
+                            <i class="fas fa-sign-in-alt"></i> Sign In
+                        </button>
+                    </form>
+                    <div id="login-error" class="error-message" style="display: none;"></div>
+                </div>
+            </div>
+        </section>
+
         <!-- Dashboard Section -->
-        <section id="dashboard-section" class="content-section active">
+        <section id="dashboard-section" class="content-section">
             <div class="section-header">
                 <h1>Dashboard</h1>
                 <p>Overview of TokenShield system status and statistics</p>
@@ -292,6 +346,36 @@
             </div>
         </section>
 
+        <!-- Users Section -->
+        <section id="users-section" class="content-section">
+            <div class="section-header">
+                <h1>User Management</h1>
+                <p>Manage system users and permissions</p>
+            </div>
+            
+            <div class="controls-bar">
+                <div class="action-controls">
+                    <button id="create-user-btn" class="btn btn-primary">
+                        <i class="fas fa-user-plus"></i> Create User
+                    </button>
+                    <button id="refresh-users-btn" class="btn btn-secondary">
+                        <i class="fas fa-sync"></i> Refresh
+                    </button>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <h3>System Users</h3>
+                </div>
+                <div class="card-content">
+                    <div id="users-table" class="table-container">
+                        <div class="loading">Loading users...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- Settings Section -->
         <section id="settings-section" class="content-section">
             <div class="section-header">
@@ -388,6 +472,54 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="hideCreateAPIKeyModal()">Cancel</button>
                 <button class="btn btn-primary" onclick="createAPIKey()">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Creation Modal -->
+    <div id="user-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="user-modal-title">Create User</h3>
+                <button class="modal-close" onclick="closeUserModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="user-form">
+                    <div class="form-group">
+                        <label for="user-username">Username *</label>
+                        <input type="text" id="user-username" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="user-email">Email *</label>
+                        <input type="email" id="user-email" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="user-password">Password *</label>
+                        <input type="password" id="user-password" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="user-full-name">Full Name</label>
+                        <input type="text" id="user-full-name">
+                    </div>
+                    <div class="form-group">
+                        <label for="user-role">Role</label>
+                        <select id="user-role">
+                            <option value="viewer">Viewer</option>
+                            <option value="operator">Operator</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="user-active" checked>
+                            Active User
+                        </label>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeUserModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveUser()">Create User</button>
             </div>
         </div>
     </div>

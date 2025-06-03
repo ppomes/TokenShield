@@ -5,24 +5,396 @@ class TokenShieldDashboard {
         this.config = {
             apiUrl: localStorage.getItem('tokenshield_api_url') || 'http://localhost:8090',
             apiKey: localStorage.getItem('tokenshield_api_key') || '',
-            adminSecret: localStorage.getItem('tokenshield_admin_secret') || ''
+            adminSecret: localStorage.getItem('tokenshield_admin_secret') || '',
+            sessionId: localStorage.getItem('tokenshield_session_id') || ''
         };
         
+        this.currentUser = null;
         this.refreshInterval = null;
         this.init();
     }
 
     init() {
-        this.setupNavigation();
-        this.loadSettings();
-        this.checkConnection();
-        this.loadDashboard();
-        
-        // Set up auto-refresh if enabled
-        const refreshInterval = localStorage.getItem('tokenshield_refresh_interval') || '0';
-        if (refreshInterval !== '0') {
-            this.setAutoRefresh(parseInt(refreshInterval));
+        this.setupEventListeners();
+        this.checkAuthentication();
+    }
+
+    setupEventListeners() {
+        // Login form
+        const loginForm = document.getElementById('login-form');
+        if (loginForm) {
+            loginForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.handleLogin();
+            });
         }
+
+        // User dropdown menu
+        const userMenuBtn = document.getElementById('user-menu-btn');
+        if (userMenuBtn) {
+            userMenuBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                document.getElementById('user-menu').classList.toggle('active');
+            });
+        }
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', () => {
+            document.getElementById('user-menu')?.classList.remove('active');
+        });
+
+        // Logout button
+        const logoutBtn = document.getElementById('logout-btn');
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.handleLogout();
+            });
+        }
+
+        // Profile button
+        const profileBtn = document.getElementById('profile-btn');
+        if (profileBtn) {
+            profileBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                // Navigate to settings with user section
+                document.querySelector('[data-section="settings"]').click();
+            });
+        }
+
+        // Settings button in dropdown
+        const settingsBtn = document.getElementById('settings-btn');
+        if (settingsBtn) {
+            settingsBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                document.querySelector('[data-section="settings"]').click();
+            });
+        }
+
+        // User management
+        const createUserBtn = document.getElementById('create-user-btn');
+        if (createUserBtn) {
+            createUserBtn.addEventListener('click', () => this.openUserModal());
+        }
+
+        const refreshUsersBtn = document.getElementById('refresh-users-btn');
+        if (refreshUsersBtn) {
+            refreshUsersBtn.addEventListener('click', () => this.loadUsers());
+        }
+
+        this.setupNavigation();
+    }
+
+    async checkAuthentication() {
+        // Check if we have a session
+        if (!this.config.sessionId) {
+            this.showLogin();
+            return;
+        }
+
+        try {
+            const response = await this.makeRequest('/api/v1/auth/me');
+            if (response.ok) {
+                this.currentUser = await response.json();
+                this.showDashboard();
+                this.updateUserMenu();
+                this.checkConnection();
+                this.loadDashboard();
+            } else {
+                // Session expired or invalid
+                this.clearSession();
+                this.showLogin();
+            }
+        } catch (error) {
+            console.error('Auth check failed:', error);
+            this.showLogin();
+        }
+    }
+
+    showLogin() {
+        document.getElementById('login-section').classList.add('active');
+        document.getElementById('main-nav').style.display = 'none';
+        document.getElementById('user-menu').style.display = 'none';
+        
+        // Hide all other sections
+        const sections = document.querySelectorAll('.content-section:not(#login-section)');
+        sections.forEach(section => section.classList.remove('active'));
+    }
+
+    showDashboard() {
+        document.getElementById('login-section').classList.remove('active');
+        document.getElementById('main-nav').style.display = 'flex';
+        document.getElementById('user-menu').style.display = 'flex';
+        
+        // Show dashboard by default
+        document.getElementById('dashboard-section').classList.add('active');
+        
+        // Update nav to show dashboard as active
+        const navLinks = document.querySelectorAll('.nav-link');
+        navLinks.forEach(link => link.classList.remove('active'));
+        document.querySelector('[data-section="dashboard"]').classList.add('active');
+    }
+
+    updateUserMenu() {
+        if (this.currentUser) {
+            document.getElementById('current-username').textContent = this.currentUser.username;
+            document.getElementById('user-email').textContent = this.currentUser.email;
+            
+            const roleElement = document.getElementById('user-role');
+            roleElement.textContent = this.currentUser.role.charAt(0).toUpperCase() + this.currentUser.role.slice(1);
+            roleElement.className = `user-role-badge ${this.currentUser.role}`;
+        }
+    }
+
+    async handleLogin() {
+        const username = document.getElementById('username').value;
+        const password = document.getElementById('password').value;
+        const errorDiv = document.getElementById('login-error');
+
+        try {
+            const response = await fetch(`${this.config.apiUrl}/api/v1/auth/login`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ username, password })
+            });
+
+            if (response.ok) {
+                const authData = await response.json();
+                this.config.sessionId = authData.session_id;
+                this.currentUser = authData.user;
+                
+                // Store session
+                localStorage.setItem('tokenshield_session_id', authData.session_id);
+                
+                // Clear old API key to prevent conflicts
+                localStorage.removeItem('tokenshield_api_key');
+                this.config.apiKey = '';
+                
+                this.showDashboard();
+                this.updateUserMenu();
+                this.checkConnection();
+                this.loadDashboard();
+                errorDiv.style.display = 'none';
+            } else {
+                const errorData = await response.json();
+                errorDiv.textContent = errorData.error || 'Login failed';
+                errorDiv.style.display = 'block';
+            }
+        } catch (error) {
+            console.error('Login failed:', error);
+            errorDiv.textContent = 'Connection error. Please check the API URL.';
+            errorDiv.style.display = 'block';
+        }
+    }
+
+    async handleLogout() {
+        try {
+            await this.makeRequest('/api/v1/auth/logout', { method: 'POST' });
+        } catch (error) {
+            console.log('Logout request failed, clearing session anyway');
+        }
+        
+        this.clearSession();
+        this.showLogin();
+    }
+
+    clearSession() {
+        this.config.sessionId = '';
+        this.currentUser = null;
+        localStorage.removeItem('tokenshield_session_id');
+    }
+
+    async makeRequest(endpoint, options = {}) {
+        const headers = {
+            'Content-Type': 'application/json',
+            ...options.headers
+        };
+
+        // Use session if available, otherwise fall back to API key
+        if (this.config.sessionId) {
+            headers['Authorization'] = `Bearer ${this.config.sessionId}`;
+            // Don't send API key if we have a session
+        } else if (this.config.apiKey) {
+            headers['X-API-Key'] = this.config.apiKey;
+        }
+
+        if (this.config.adminSecret) {
+            headers['X-Admin-Secret'] = this.config.adminSecret;
+        }
+
+        const response = await fetch(`${this.config.apiUrl}${endpoint}`, {
+            ...options,
+            headers
+        });
+
+        // If unauthorized, clear session and redirect to login
+        if (response.status === 401) {
+            this.clearSession();
+            this.showLogin();
+        }
+
+        return response;
+    }
+
+    // User Management Methods
+    async loadUsers() {
+        try {
+            const response = await this.makeRequest('/api/v1/users');
+            if (response.ok) {
+                const data = await response.json();
+                this.displayUsers(data.users);
+            } else {
+                this.showError('Failed to load users');
+            }
+        } catch (error) {
+            console.error('Error loading users:', error);
+            this.showError('Error loading users');
+        }
+    }
+
+    displayUsers(users) {
+        const container = document.getElementById('users-table');
+        
+        if (!users || users.length === 0) {
+            container.innerHTML = '<div class="no-data">No users found</div>';
+            return;
+        }
+
+        const table = `
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>Email</th>
+                        <th>Full Name</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th>Last Login</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${users.map(user => `
+                        <tr>
+                            <td class="font-mono">${user.username}</td>
+                            <td>${user.email}</td>
+                            <td>${user.full_name || '-'}</td>
+                            <td><span class="user-role-badge ${user.role}">${user.role}</span></td>
+                            <td>
+                                <span class="user-status ${user.is_active ? 'active' : 'inactive'}">
+                                    <i class="fas fa-circle"></i>
+                                    ${user.is_active ? 'Active' : 'Inactive'}
+                                </span>
+                            </td>
+                            <td>${user.last_login_at ? new Date(user.last_login_at).toLocaleString() : 'Never'}</td>
+                            <td>
+                                <div class="user-actions">
+                                    <button class="btn btn-secondary btn-xs" onclick="dashboard.editUser('${user.user_id}')">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    ${user.username !== 'admin' ? `
+                                        <button class="btn btn-danger btn-xs" onclick="dashboard.deleteUser('${user.user_id}', '${user.username}')">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    ` : ''}
+                                </div>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+        
+        container.innerHTML = table;
+    }
+
+    openUserModal(userId = null) {
+        const modal = document.getElementById('user-modal');
+        const title = document.getElementById('user-modal-title');
+        const form = document.getElementById('user-form');
+        
+        if (userId) {
+            title.textContent = 'Edit User';
+            // Load user data for editing
+            this.loadUserForEdit(userId);
+        } else {
+            title.textContent = 'Create User';
+            form.reset();
+            document.getElementById('user-active').checked = true;
+        }
+        
+        modal.style.display = 'block';
+    }
+
+    async saveUser() {
+        const form = document.getElementById('user-form');
+        const formData = new FormData(form);
+        
+        const userData = {
+            username: document.getElementById('user-username').value,
+            email: document.getElementById('user-email').value,
+            password: document.getElementById('user-password').value,
+            full_name: document.getElementById('user-full-name').value,
+            role: document.getElementById('user-role').value
+        };
+
+        // Validate required fields
+        if (!userData.username || !userData.email || !userData.password) {
+            this.showError('Please fill in all required fields');
+            return;
+        }
+
+        try {
+            const response = await this.makeRequest('/api/v1/users', {
+                method: 'POST',
+                body: JSON.stringify(userData)
+            });
+
+            if (response.ok) {
+                this.showToast('User created successfully', 'success');
+                this.closeUserModal();
+                this.loadUsers();
+            } else {
+                const error = await response.json();
+                this.showError(error.error || 'Failed to create user');
+            }
+        } catch (error) {
+            console.error('Error creating user:', error);
+            this.showError('Error creating user');
+        }
+    }
+
+    async deleteUser(userId, username) {
+        if (!confirm(`Are you sure you want to delete user '${username}'?`)) {
+            return;
+        }
+
+        try {
+            const response = await this.makeRequest(`/api/v1/users/${username}`, {
+                method: 'DELETE'
+            });
+
+            if (response.ok) {
+                this.showToast('User deleted successfully', 'success');
+                this.loadUsers();
+            } else {
+                const error = await response.json();
+                this.showError(error.error || 'Failed to delete user');
+            }
+        } catch (error) {
+            console.error('Error deleting user:', error);
+            this.showError('Error deleting user');
+        }
+    }
+
+    closeUserModal() {
+        document.getElementById('user-modal').style.display = 'none';
+    }
+
+    showError(message) {
+        this.showToast('Error', message, 'error');
     }
 
     setupNavigation() {
@@ -59,6 +431,9 @@ class TokenShieldDashboard {
             case 'apikeys':
                 await this.loadAPIKeys();
                 break;
+            case 'users':
+                await this.loadUsers();
+                break;
             case 'activity':
                 await this.loadActivity();
                 break;
@@ -71,42 +446,13 @@ class TokenShieldDashboard {
         }
     }
 
+    // Legacy method - calls makeRequest but returns JSON directly
     async makeAPIRequest(endpoint, options = {}) {
-        const url = `${this.config.apiUrl}${endpoint}`;
-        const headers = {
-            'Content-Type': 'application/json',
-            ...options.headers
-        };
-
-        if (this.config.apiKey) {
-            headers['X-API-Key'] = this.config.apiKey;
+        const response = await this.makeRequest(endpoint, options);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
-
-        if (this.config.adminSecret) {
-            headers['X-Admin-Secret'] = this.config.adminSecret;
-        }
-
-        console.log('Making API request to:', url);
-        console.log('Headers:', headers);
-
-        try {
-            const response = await fetch(url, {
-                ...options,
-                headers
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-
-            const data = await response.json();
-            console.log('API Response:', data);
-            return data;
-        } catch (error) {
-            console.error('API Request failed:', error);
-            this.showToast('API Error', error.message, 'error');
-            throw error;
-        }
+        return await response.json();
     }
 
     async checkConnection() {
@@ -814,6 +1160,10 @@ function saveSettings() { dashboard.saveSettings(); }
 function testConnection() { dashboard.testConnection(); }
 function refreshKeyStatus() { dashboard.loadKeyStatus(); }
 function rotateKeys() { dashboard.rotateKeys(); }
+
+// User management global functions
+function closeUserModal() { dashboard.closeUserModal(); }
+function saveUser() { dashboard.saveUser(); }
 
 // Initialize dashboard when page loads
 let dashboard;

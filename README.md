@@ -39,6 +39,7 @@
 - **Unified Go Service**: Demonstrates multi-protocol tokenization in a single binary
 - **Triple Protocol Support**: HTTP (tokenization), ICAP (detokenization), REST API (management)  
 - **Web GUI Dashboard**: Modern browser-based interface for managing tokens and monitoring activity
+- **User Management System**: Role-based access control with admin, operator, and viewer roles
 - **CLI Management Tool**: Command-line interface for all tokenization operations
 - **Transparent Interception**: Shows how proxies can intercept and modify traffic
 - **Bidirectional Flow**: Tokenizes inbound requests, detokenizes outbound requests
@@ -137,26 +138,38 @@ TOKEN_FORMAT=luhn docker-compose up -d
 docker-compose ps
 ```
 
+#### 6. Default Admin User
+When the system starts for the first time, it automatically creates a default admin user:
+- **Username**: `admin`
+- **Password**: `admin123`
+
+This user has full system administrator privileges. **You should change this password immediately after first login!**
+
 ## Testing the System
 
 ### 1. Access the Web GUI Dashboard
 Open your browser and go to: **http://localhost:8081**
 
+#### Default Login Credentials
+- **Username**: `admin`
+- **Password**: `admin123`
+
+⚠️ **Important**: Change the default admin password immediately after first login!
+
 The TokenShield dashboard provides:
 - **System overview** with real-time statistics
 - **Token management** - view, search, and revoke tokens
+- **User management** - create and manage system users with role-based permissions
 - **API key management** - create and manage API keys
 - **Activity monitoring** - track all tokenization operations
+- **Key rotation** - manage encryption keys (when KEK/DEK is enabled)
 - **Settings** - configure API connection and preferences
 
-#### Initial Setup
-1. Go to the **Settings** tab
-2. Enter API configuration:
-   - **API URL**: `http://localhost:8090`
-   - **Admin Secret**: `change-this-admin-secret`
-3. Click **"Test Connection"** and **"Save Settings"**
-4. Navigate to **API Keys** tab and create your first API key
-5. Use the new API key in Settings for full dashboard access
+#### User Roles
+TokenShield supports three user roles:
+- **Admin**: Full system access including user management
+- **Operator**: Can manage tokens and API keys, view activity
+- **Viewer**: Read-only access to tokens and activity
 
 ### 2. Access the Demo Application
 You can also test the tokenization flow directly at: http://localhost
@@ -207,44 +220,85 @@ cd cli
 # Or use Docker
 docker build -t tokenshield-cli .
 
-# Create API key
+# Login with user credentials (recommended)
+./tokenshield login
+# Enter username: admin
+# Enter password: admin123
+
+# Or use API key authentication
 ./tokenshield apikey create "My App" --admin-secret change-this-admin-secret
 
-# List tokens
-./tokenshield token list --api-key YOUR_API_KEY
+# User management (requires admin role)
+./tokenshield user list
+./tokenshield user create --username john --email john@example.com --role operator
+./tokenshield user delete john
 
-# Search tokens
-./tokenshield token search --last-four 1234 --api-key YOUR_API_KEY
+# Token management
+./tokenshield token list
+./tokenshield token search --last-four 1234
+./tokenshield token revoke tok_abc123...
 
 # View activity
-./tokenshield activity --limit 50 --api-key YOUR_API_KEY
+./tokenshield activity --limit 50
 
 # Get statistics
-./tokenshield stats --api-key YOUR_API_KEY
+./tokenshield stats
+
+# Current user info
+./tokenshield whoami
+
+# Logout
+./tokenshield logout
 ```
+
+The CLI supports both session-based authentication (after login) and API key authentication for automation.
 
 See `cli/README.md` for complete CLI documentation.
 
 ### 8. Management API
 
-Create an API key:
+#### Authentication
+The API supports two authentication methods:
+
+1. **Session-based authentication** (for interactive use):
 ```bash
-curl -X POST http://localhost:8090/api/v1/api-keys \
+# Login
+curl -X POST http://localhost:8090/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -H "X-Admin-Secret: change-this-admin-secret" \
-  -d '{"client_name": "Test Client"}'
+  -d '{"username": "admin", "password": "admin123"}'
+# Returns: {"session_id": "sess_xxx...", "user": {...}}
+
+# Use session in subsequent requests
+curl http://localhost:8090/api/v1/tokens \
+  -H "Authorization: Bearer sess_xxx..."
 ```
 
-List tokens (use the API key from above):
+2. **API key authentication** (for automation):
 ```bash
+# Create an API key (requires admin privileges)
+curl -X POST http://localhost:8090/api/v1/api-keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sess_xxx..." \
+  -d '{"client_name": "Test Client"}'
+
+# Use API key
 curl http://localhost:8090/api/v1/tokens \
   -H "X-API-Key: YOUR_API_KEY"
 ```
 
-Get statistics:
+#### Common Operations
 ```bash
+# Get statistics
 curl http://localhost:8090/api/v1/stats \
-  -H "X-API-Key: YOUR_API_KEY"
+  -H "Authorization: Bearer sess_xxx..."
+
+# List users (admin only)
+curl http://localhost:8090/api/v1/users \
+  -H "Authorization: Bearer sess_xxx..."
+
+# View activity
+curl http://localhost:8090/api/v1/activity?limit=50 \
+  -H "Authorization: Bearer sess_xxx..."
 ```
 
 ## Services and Ports
