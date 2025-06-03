@@ -494,9 +494,10 @@ All endpoints return consistent error responses:
 
 ## Rate Limiting
 
-API requests are rate-limited per API key:
-- 1000 requests per hour for regular operations
-- 100 requests per hour for admin operations
+Rate limiting is not currently implemented in this prototype version. In a production deployment, rate limiting should be implemented based on:
+- Session/user for authenticated requests
+- IP address for unauthenticated endpoints (login)
+- Stricter limits for sensitive operations
 
 ## Examples
 
