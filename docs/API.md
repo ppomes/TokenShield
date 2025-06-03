@@ -538,13 +538,13 @@ curl -X POST http://localhost:8090/api/v1/api-keys \\
 ### List Tokens
 ```bash
 curl http://localhost:8090/api/v1/tokens \\
-  -H "X-API-Key: ts_your-api-key"
+  -H "Authorization: Bearer sess_your-session-token"
 ```
 
 ### Search Tokens
 ```bash
 curl -X POST http://localhost:8090/api/v1/tokens/search \\
-  -H "X-API-Key: ts_your-api-key" \\
+  -H "Authorization: Bearer sess_your-session-token" \\
   -H "Content-Type: application/json" \\
   -d '{
     "last_four": "1234",
@@ -555,35 +555,38 @@ curl -X POST http://localhost:8090/api/v1/tokens/search \\
 ### Get Activity
 ```bash
 curl http://localhost:8090/api/v1/activity?limit=20 \\
-  -H "X-API-Key: ts_your-api-key"
+  -H "Authorization: Bearer sess_your-session-token"
 ```
 
 ### Get Statistics
 ```bash
 curl http://localhost:8090/api/v1/stats \\
-  -H "X-API-Key: ts_your-api-key"
+  -H "Authorization: Bearer sess_your-session-token"
 ```
 
 ## Integration Notes
 
-### For GUI Applications
+### For All Clients (GUI, CLI, and Automation)
 - Use session-based authentication with login endpoint
 - Handle `require_password_change` flag on login
+- Sessions expire after 24 hours - implement re-authentication logic
+- Store session tokens securely (browser storage for GUI, config file with proper permissions for CLI)
+
+### For GUI Applications
 - Implement automatic session refresh before expiry
 - Use the activity endpoint for real-time monitoring
 - Implement pagination for large token lists
 - Cache statistics and refresh periodically
 
 ### For CLI Tools
-- Support both session-based auth (with login) and API key auth
-- Store API key in config file or environment variable
-- For session auth, persist session token between commands
+- Persist session token between commands in secure config file
+- Implement interactive login with hidden password input
 - Use search endpoint for filtered operations
 - Implement progress indicators for long operations
 
-### For Automation
-- Use API key authentication for unattended scripts
-- Request API keys through the admin interface
+### For Future Automation (When API Keys are Implemented)
+- API key authentication is not currently available
+- For now, automation scripts must use session-based auth
+- Consider implementing service accounts with extended session lifetimes
 - Use activity monitoring for audit trails
 - Implement retry logic with exponential backoff
-- Monitor key rotation status for compliance
