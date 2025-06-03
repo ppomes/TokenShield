@@ -7,20 +7,192 @@ http://localhost:8090/api/v1
 
 ## Authentication
 
-### API Key Authentication
+TokenShield supports two authentication methods:
+
+### 1. Session-Based Authentication (Recommended for UI)
+Users authenticate with username/password and receive a session token.
+
+```
+Authorization: Bearer sess_your-session-token
+```
+
+### 2. API Key Authentication (For Automation/CLI)
 Include the API key in the request header:
 ```
 X-API-Key: your-api-key-here
 ```
 
-### Admin Authentication
-For admin operations, include both API key and admin secret:
-```
-X-API-Key: your-api-key-here
-X-Admin-Secret: your-admin-secret
-```
+**Note:** Admin operations no longer require X-Admin-Secret header when using session authentication with admin role.
 
 ## Endpoints
+
+### Authentication
+
+#### POST /api/v1/auth/login
+Authenticate user and create session.
+
+**Request:**
+```json
+{
+  "username": "admin",
+  "password": "your-password"
+}
+```
+
+**Response:**
+```json
+{
+  "session_id": "sess_abc123...",
+  "user": {
+    "user_id": "usr_admin",
+    "username": "admin",
+    "email": "admin@example.com",
+    "full_name": "Admin User",
+    "role": "admin",
+    "permissions": ["system.admin"],
+    "is_active": true,
+    "created_at": "2024-01-01T00:00:00Z",
+    "last_login_at": "2024-01-02T10:00:00Z"
+  },
+  "expires_at": "2024-01-03T10:00:00Z",
+  "require_password_change": false
+}
+```
+
+#### POST /api/v1/auth/logout
+End current session.
+
+**Headers:**
+- `Authorization: Bearer sess_your-session-token`
+
+**Response:**
+```json
+{
+  "message": "Logged out successfully"
+}
+```
+
+#### GET /api/v1/auth/me
+Get current user information.
+
+**Headers:**
+- `Authorization: Bearer sess_your-session-token`
+
+**Response:**
+```json
+{
+  "user_id": "usr_admin",
+  "username": "admin",
+  "email": "admin@example.com",
+  "full_name": "Admin User",
+  "role": "admin",
+  "permissions": ["system.admin"],
+  "is_active": true,
+  "created_at": "2024-01-01T00:00:00Z",
+  "last_login_at": "2024-01-02T10:00:00Z"
+}
+```
+
+#### POST /api/v1/auth/change-password
+Change user password.
+
+**Headers:**
+- `Authorization: Bearer sess_your-session-token`
+
+**Request:**
+```json
+{
+  "current_password": "old-password",
+  "new_password": "new-secure-password"
+}
+```
+
+**Response:**
+```json
+{
+  "message": "Password changed successfully"
+}
+```
+
+**Password Requirements:**
+- Minimum 8 characters
+- At least one uppercase letter
+- At least one lowercase letter
+- At least one number
+- At least one special character
+
+### User Management (Admin Only)
+
+#### GET /api/v1/users
+List all users. Requires admin role.
+
+**Headers:**
+- `Authorization: Bearer sess_your-session-token`
+
+**Response:**
+```json
+{
+  "users": [
+    {
+      "user_id": "usr_123",
+      "username": "john",
+      "email": "john@example.com",
+      "full_name": "John Doe",
+      "role": "operator",
+      "permissions": ["tokens.read", "tokens.write"],
+      "is_active": true,
+      "created_at": "2024-01-01T00:00:00Z",
+      "last_login_at": "2024-01-02T10:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+#### POST /api/v1/users
+Create a new user. Requires admin role.
+
+**Headers:**
+- `Authorization: Bearer sess_your-session-token`
+
+**Request:**
+```json
+{
+  "username": "newuser",
+  "email": "newuser@example.com",
+  "password": "initial-password",
+  "full_name": "New User",
+  "role": "operator"
+}
+```
+
+**Available Roles:**
+- `admin`: Full system access
+- `operator`: Can manage tokens and API keys
+- `viewer`: Read-only access
+
+**Response:**
+```json
+{
+  "user_id": "usr_456",
+  "username": "newuser",
+  "email": "newuser@example.com",
+  "message": "User created successfully"
+}
+```
+
+#### DELETE /api/v1/users/{username}
+Delete a user. Requires admin role.
+
+**Headers:**
+- `Authorization: Bearer sess_your-session-token`
+
+**Response:**
+```json
+{
+  "message": "User deleted successfully"
+}
+```
 
 ### System Information
 
@@ -51,10 +223,10 @@ Get system version and configuration.
 ### API Key Management
 
 #### POST /api/v1/api-keys
-Create a new API key. Requires admin privileges.
+Create a new API key. Requires admin role.
 
 **Headers:**
-- `X-Admin-Secret: your-admin-secret`
+- `Authorization: Bearer sess_your-session-token` (with admin role)
 
 **Request:**
 ```json
@@ -75,10 +247,10 @@ Create a new API key. Requires admin privileges.
 ```
 
 #### GET /api/v1/api-keys
-List all API keys. Requires admin privileges.
+List all API keys. Requires admin role.
 
 **Headers:**
-- `X-Admin-Secret: your-admin-secret`
+- `Authorization: Bearer sess_your-session-token` (with admin role)
 
 **Response:**
 ```json
@@ -98,10 +270,10 @@ List all API keys. Requires admin privileges.
 ```
 
 #### DELETE /api/v1/api-keys/{api_key}
-Revoke an API key. Requires admin privileges.
+Revoke an API key. Requires admin role.
 
 **Headers:**
-- `X-Admin-Secret: your-admin-secret`
+- `Authorization: Bearer sess_your-session-token` (with admin role)
 
 **Response:**
 ```json
@@ -115,7 +287,8 @@ Revoke an API key. Requires admin privileges.
 #### GET /api/v1/tokens
 List all tokens with pagination.
 
-**Headers:**
+**Headers (one of):**
+- `Authorization: Bearer sess_your-session-token`
 - `X-API-Key: your-api-key`
 
 **Query Parameters:**
@@ -280,11 +453,10 @@ Get current encryption key status.
 ```
 
 #### POST /api/v1/keys/rotate
-Initiate key rotation. Requires admin privileges.
+Initiate key rotation. Requires admin role.
 
 **Headers:**
-- `X-API-Key: your-api-key`
-- `X-Admin-Secret: your-admin-secret`
+- `Authorization: Bearer sess_your-session-token` (with admin role)
 
 **Request:**
 ```json
@@ -330,13 +502,36 @@ API requests are rate-limited per API key:
 
 ## Examples
 
-### Create API Key
+### Authentication
+
+#### Login
 ```bash
-curl -X POST http://localhost:8090/api/v1/api-keys \\
-  -H "X-Admin-Secret: change-this-admin-secret" \\
+curl -X POST http://localhost:8090/api/v1/auth/login \\
   -H "Content-Type: application/json" \\
   -d '{
-    "client_name": "Dashboard",
+    "username": "admin",
+    "password": "your-password"
+  }'
+```
+
+#### Change Password
+```bash
+curl -X POST http://localhost:8090/api/v1/auth/change-password \\
+  -H "Authorization: Bearer sess_your-session-token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "current_password": "old-password",
+    "new_password": "NewSecure123!"
+  }'
+```
+
+### Create API Key (Admin Only)
+```bash
+curl -X POST http://localhost:8090/api/v1/api-keys \\
+  -H "Authorization: Bearer sess_your-admin-session-token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "client_name": "My CLI Tool",
     "permissions": ["read", "write"]
   }'
 ```
@@ -373,16 +568,23 @@ curl http://localhost:8090/api/v1/stats \\
 ## Integration Notes
 
 ### For GUI Applications
+- Use session-based authentication with login endpoint
+- Handle `require_password_change` flag on login
+- Implement automatic session refresh before expiry
 - Use the activity endpoint for real-time monitoring
 - Implement pagination for large token lists
 - Cache statistics and refresh periodically
 
 ### For CLI Tools
+- Support both session-based auth (with login) and API key auth
 - Store API key in config file or environment variable
+- For session auth, persist session token between commands
 - Use search endpoint for filtered operations
 - Implement progress indicators for long operations
 
 ### For Automation
+- Use API key authentication for unattended scripts
+- Request API keys through the admin interface
 - Use activity monitoring for audit trails
 - Implement retry logic with exponential backoff
 - Monitor key rotation status for compliance
