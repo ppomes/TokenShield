@@ -984,7 +984,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.tokenshield.yaml)")
 	rootCmd.PersistentFlags().StringVar(&apiURL, "api-url", "", "TokenShield API URL (default: http://localhost:8090)")
 	// API key flag removed - using session-based authentication only
-	rootCmd.PersistentFlags().StringVar(&adminSecret, "admin-secret", "", "Admin secret for privileged operations")
+	// Admin secret flag removed - using session-based authentication only
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 
 	// Token command flags
