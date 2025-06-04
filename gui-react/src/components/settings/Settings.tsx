@@ -13,19 +13,29 @@ import {
   Card,
   CardContent,
   Chip,
+  RadioGroup,
+  Radio,
+  FormControl,
+  FormLabel,
 } from '@mui/material';
 import {
   Save as SaveIcon,
   Security as SecurityIcon,
   Person as PersonIcon,
   VpnKey as VpnKeyIcon,
+  Palette as PaletteIcon,
+  DarkMode,
+  LightMode,
+  SettingsBrightness,
 } from '@mui/icons-material';
 import { useAuth } from '../../contexts/AuthContext';
+import { useTheme } from '../../contexts/ThemeContext';
 import { api } from '../../services/api';
 import { ApiConfiguration } from './ApiConfiguration';
 
 export function Settings() {
   const { user } = useAuth();
+  const { mode, setTheme } = useTheme();
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   
@@ -96,6 +106,74 @@ export function Settings() {
           {error}
         </Alert>
       )}
+
+      {/* Theme Settings */}
+      <Card sx={{ mb: 3 }}>
+        <CardContent>
+          <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+            <PaletteIcon sx={{ mr: 1 }} />
+            <Typography variant="h6">Appearance</Typography>
+          </Box>
+          <FormControl component="fieldset">
+            <FormLabel component="legend" sx={{ mb: 2 }}>Theme Mode</FormLabel>
+            <RadioGroup
+              value={mode}
+              onChange={(e) => setTheme(e.target.value as 'light' | 'dark')}
+              sx={{
+                '& .MuiFormControlLabel-root': {
+                  mb: 1,
+                  mr: 3,
+                },
+              }}
+            >
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <FormControlLabel
+                  value="light"
+                  control={<Radio />}
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                      <LightMode sx={{ mr: 1, fontSize: '1.2rem' }} />
+                      <Box>
+                        <Typography variant="body1">Light Mode</Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Clean and bright interface for better readability in well-lit environments
+                        </Typography>
+                      </Box>
+                    </Box>
+                  }
+                />
+                <FormControlLabel
+                  value="dark"
+                  control={<Radio />}
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                      <DarkMode sx={{ mr: 1, fontSize: '1.2rem' }} />
+                      <Box>
+                        <Typography variant="body1">Dark Mode</Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Reduced eye strain with a dark theme, perfect for low-light conditions
+                        </Typography>
+                      </Box>
+                    </Box>
+                  }
+                />
+              </Box>
+            </RadioGroup>
+          </FormControl>
+          <Box sx={{ mt: 3, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+              <SettingsBrightness sx={{ mr: 1, fontSize: '1rem', color: 'text.secondary' }} />
+              <Typography variant="body2" color="text.secondary" fontWeight={500}>
+                Smart Theme Detection
+              </Typography>
+            </Box>
+            <Typography variant="body2" color="text.secondary">
+              Your theme preference is automatically saved and will persist across sessions. 
+              The system will also respect your operating system's theme preference when you first visit.
+            </Typography>
+          </Box>
+        </CardContent>
+      </Card>
 
       {/* User Profile */}
       <Card sx={{ mb: 3 }}>
@@ -201,7 +279,7 @@ export function Settings() {
       </Card>
 
       {/* Security Settings */}
-      <Card>
+      <Card sx={{ mb: 3 }}>
         <CardContent>
           <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
             <SecurityIcon sx={{ mr: 1 }} />

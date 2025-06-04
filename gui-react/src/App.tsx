@@ -1,7 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { ThemeProvider, createTheme } from '@mui/material/styles';
-import CssBaseline from '@mui/material/CssBaseline';
 import { AuthProvider } from './contexts/AuthContext';
+import { CustomThemeProvider } from './contexts/ThemeContext';
 import { LoginForm } from './components/auth/LoginForm';
 import { AppLayout } from './components/layout/AppLayout';
 import { Dashboard } from './components/dashboard/Dashboard';
@@ -13,23 +12,10 @@ import { Settings } from './components/settings/Settings';
 import { ProtectedRoute } from './components/auth/ProtectedRoute';
 import { PasswordChangeDialog } from './components/auth/PasswordChangeDialog';
 
-// Create theme
-const theme = createTheme({
-  palette: {
-    primary: {
-      main: '#1976d2',
-    },
-    secondary: {
-      main: '#dc004e',
-    },
-  },
-});
-
 function App() {
   console.log('App component is rendering');
   return (
-    <ThemeProvider theme={theme}>
-      <CssBaseline />
+    <CustomThemeProvider>
       <AuthProvider>
         <Router>
           <Routes>
@@ -54,7 +40,7 @@ function App() {
           <PasswordChangeDialog />
         </Router>
       </AuthProvider>
-    </ThemeProvider>
+    </CustomThemeProvider>
   );
 }
 

@@ -16,6 +16,7 @@ import {
   MenuItem,
   Divider,
   Avatar,
+  Tooltip,
 } from '@mui/material';
 import {
   Menu as MenuIcon,
@@ -27,9 +28,12 @@ import {
   Key as KeyIcon,
   AccountCircle,
   Logout,
+  DarkMode,
+  LightMode,
 } from '@mui/icons-material';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { useTheme } from '../../contexts/ThemeContext';
 
 const drawerWidth = 240;
 
@@ -53,6 +57,7 @@ export function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const { user, logout } = useAuth();
+  const { mode, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -129,6 +134,15 @@ export function AppLayout() {
           </Typography>
           
           <Box sx={{ display: 'flex', alignItems: 'center' }}>
+            <Tooltip title={`Switch to ${mode === 'light' ? 'dark' : 'light'} mode`}>
+              <IconButton
+                color="inherit"
+                onClick={toggleTheme}
+                sx={{ mr: 1 }}
+              >
+                {mode === 'light' ? <DarkMode /> : <LightMode />}
+              </IconButton>
+            </Tooltip>
             <Typography variant="body2" sx={{ mr: 2 }}>
               {user?.full_name || user?.username}
             </Typography>
