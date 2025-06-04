@@ -51,6 +51,14 @@ export interface ApiKey {
   last_used_at?: string;
 }
 
+export interface SystemInfo {
+  version: string;
+  token_format: string;
+  kek_dek_enabled: boolean;
+  features: string[];
+  status: string;
+}
+
 export interface ApiError {
   error: string;
   details?: string;

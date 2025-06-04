@@ -1,5 +1,5 @@
 import axios, { type AxiosInstance, AxiosError } from 'axios';
-import type { Session, Token, Activity, Stats, User, ApiKey, ApiError } from '../types';
+import type { Session, Token, Activity, Stats, User, ApiKey, SystemInfo, ApiError } from '../types';
 
 class TokenShieldAPI {
   private client: AxiosInstance;
@@ -186,8 +186,8 @@ class TokenShieldAPI {
     return testInstance;
   }
 
-  // Version endpoint for connection testing
-  async getVersion(): Promise<{ version: string; status: string }> {
+  // Version endpoint for connection testing and system info
+  async getVersion(): Promise<SystemInfo> {
     const { data } = await this.client.get('/version');
     return data;
   }

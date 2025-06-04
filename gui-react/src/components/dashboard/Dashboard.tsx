@@ -15,7 +15,7 @@ import {
   SwapHoriz,
 } from '@mui/icons-material';
 import { api } from '../../services/api';
-import type { Stats } from '../../types';
+import type { Stats, SystemInfo } from '../../types';
 
 interface StatCardProps {
   title: string;
@@ -60,23 +60,28 @@ function StatCard({ title, value, icon, color }: StatCardProps) {
 
 export function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const loadStats = async () => {
+    const loadDashboardData = async () => {
       try {
-        const data = await api.getStats();
-        setStats(data);
+        const [statsData, versionData] = await Promise.all([
+          api.getStats(),
+          api.getVersion()
+        ]);
+        setStats(statsData);
+        setSystemInfo(versionData);
       } catch (err: any) {
-        setError(err.response?.data?.error || 'Failed to load statistics');
+        setError(err.response?.data?.error || 'Failed to load dashboard data');
       } finally {
         setLoading(false);
       }
     };
 
-    loadStats();
-    const interval = setInterval(loadStats, 30000); // Refresh every 30 seconds
+    loadDashboardData();
+    const interval = setInterval(loadDashboardData, 30000); // Refresh every 30 seconds
 
     return () => clearInterval(interval);
   }, []);
@@ -137,37 +142,104 @@ export function Dashboard() {
         />
       </Box>
 
-      <Paper sx={{ p: 3 }}>
-        <Typography variant="h6" gutterBottom>
-          Request Distribution (24 hours)
-        </Typography>
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr 1fr' }, gap: 3, mt: 2 }}>
-          <Box>
-            <Typography variant="body2" color="text.secondary">
-              Tokenization Requests
-            </Typography>
-            <Typography variant="h5">
-              {getRequestCount('tokenize')}
-            </Typography>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 3 }}>
+        <Paper sx={{ p: 3 }}>
+          <Typography variant="h6" gutterBottom>
+            Request Distribution (24 hours)
+          </Typography>
+          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr', gap: 2, mt: 2 }}>
+            <Box>
+              <Typography variant="body2" color="text.secondary">
+                Tokenization Requests
+              </Typography>
+              <Typography variant="h5">
+                {getRequestCount('tokenize')}
+              </Typography>
+            </Box>
+            <Box>
+              <Typography variant="body2" color="text.secondary">
+                Detokenization Requests
+              </Typography>
+              <Typography variant="h5">
+                {getRequestCount('detokenize')}
+              </Typography>
+            </Box>
+            <Box>
+              <Typography variant="body2" color="text.secondary">
+                Search Requests
+              </Typography>
+              <Typography variant="h5">
+                {getRequestCount('search')}
+              </Typography>
+            </Box>
           </Box>
-          <Box>
+        </Paper>
+
+        <Paper sx={{ p: 3 }}>
+          <Typography variant="h6" gutterBottom>
+            System Information
+          </Typography>
+          {systemInfo ? (
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr', gap: 2, mt: 2 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="body2" color="text.secondary">
+                  Version
+                </Typography>
+                <Typography variant="body1" sx={{ fontFamily: 'monospace' }}>
+                  {systemInfo.version}
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="body2" color="text.secondary">
+                  Token Format
+                </Typography>
+                <Typography variant="body1">
+                  {systemInfo.token_format}
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="body2" color="text.secondary">
+                  KEK/DEK Enabled
+                </Typography>
+                <Typography variant="body1">
+                  {systemInfo.kek_dek_enabled ? 'Yes' : 'No'}
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="body2" color="text.secondary">
+                  Features
+                </Typography>
+                <Typography variant="body1" sx={{ textAlign: 'right', wordBreak: 'break-word' }}>
+                  {systemInfo.features.join(', ')}
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="body2" color="text.secondary">
+                  API Status
+                </Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                  <Box
+                    sx={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      bgcolor: 'success.main',
+                      mr: 1,
+                    }}
+                  />
+                  <Typography variant="body1" color="success.main">
+                    Active
+                  </Typography>
+                </Box>
+              </Box>
+            </Box>
+          ) : (
             <Typography variant="body2" color="text.secondary">
-              Detokenization Requests
+              Loading system information...
             </Typography>
-            <Typography variant="h5">
-              {getRequestCount('detokenize')}
-            </Typography>
-          </Box>
-          <Box>
-            <Typography variant="body2" color="text.secondary">
-              Search Requests
-            </Typography>
-            <Typography variant="h5">
-              {getRequestCount('search')}
-            </Typography>
-          </Box>
-        </Box>
-      </Paper>
+          )}
+        </Paper>
+      </Box>
     </Box>
   );
 }
