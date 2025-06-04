@@ -41,6 +41,7 @@
 - **Web GUI Dashboard**: Modern browser-based interface for managing tokens and monitoring activity
 - **User Management System**: Role-based access control with admin, operator, and viewer roles
 - **CLI Management Tool**: Command-line interface for all tokenization operations
+- **Card Import System**: Bulk import existing card databases with JSON/CSV support and migration mapping
 - **Transparent Interception**: Shows how proxies can intercept and modify traffic
 - **Bidirectional Flow**: Tokenizes inbound requests, detokenizes outbound requests
 - **Educational Architecture**: Illustrates concepts for reducing PCI compliance scope
@@ -278,7 +279,84 @@ The CLI supports both session-based authentication (after login) and API key aut
 
 See `cli/README.md` for complete CLI documentation.
 
-### 8. Management API
+### 8. Card Import System
+
+TokenShield includes a comprehensive card import system for migrating existing databases to tokenized storage. This feature enables organizations to bulk import credit card data and receive tokens that can be used to update their protected applications.
+
+#### Import Formats
+- **JSON**: Array of card objects with full metadata support
+- **CSV**: Flexible column mapping with standard headers
+
+#### Import Features
+- **Batch Processing**: Process up to 10,000 cards per import with configurable batch sizes
+- **Duplicate Handling**: Three modes - skip, error, or overwrite existing cards
+- **External ID Mapping**: Link imported cards to your existing database records
+- **Comprehensive Validation**: Luhn algorithm, expiry dates, and data format checking
+- **Transaction Safety**: Database transactions ensure data consistency
+- **Detailed Reporting**: Per-record success/failure tracking with error details
+
+#### Example Import (JSON Format)
+```bash
+# 1. Prepare your card data with external IDs
+cat > cards.json << 'EOF'
+[
+  {
+    "card_number": "4532015112830366",
+    "card_holder": "John Doe",
+    "expiry_month": 12,
+    "expiry_year": 2028,
+    "external_id": "customer_123_card_1",
+    "metadata": "{\"customer_id\": \"123\"}"
+  }
+]
+EOF
+
+# 2. Base64 encode the data
+CARD_DATA=$(base64 -i cards.json)
+
+# 3. Import to TokenShield
+curl -X POST http://localhost:8090/api/v1/cards/import \
+  -H "Authorization: Bearer sess_xxx..." \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"format\": \"json\",
+    \"duplicate_handling\": \"skip\",
+    \"batch_size\": 100,
+    \"data\": \"$CARD_DATA\"
+  }"
+
+# 4. Response includes token mapping
+{
+  "total_records": 1,
+  "successful_imports": 1,
+  "import_id": "imp_xyz123",
+  "status": "completed",
+  "tokens_generated": [
+    {
+      "external_id": "customer_123_card_1",
+      "token": "tok_abcd1234",
+      "card_type": "Visa",
+      "last_four": "0366"
+    }
+  ]
+}
+
+# 5. Update your database with the tokens
+UPDATE customer_cards 
+SET card_token = 'tok_abcd1234', card_number = NULL 
+WHERE external_ref_id = 'customer_123_card_1';
+```
+
+#### CSV Import Format
+```csv
+card_number,card_holder,expiry_month,expiry_year,external_id,metadata
+4532015112830366,John Doe,12,2028,customer_123_card_1,"{""customer_id"": ""123""}"
+5425233430109903,Jane Smith,6,2027,customer_456_card_1,""
+```
+
+**Note**: Card import requires admin permissions and is logged for security auditing.
+
+### 12. Management API
 
 #### Authentication
 TokenShield uses session-based authentication for all clients (GUI and CLI).

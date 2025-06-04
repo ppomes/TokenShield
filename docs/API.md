@@ -374,6 +374,115 @@ Search tokens with filters.
 }
 ```
 
+#### POST /api/v1/cards/import
+Import cards in bulk for system migration (Admin only).
+
+**Headers:**
+- `Authorization: Bearer sess_your-session-token` (Admin role required)
+- `Content-Type: application/json`
+
+**Request:**
+```json
+{
+  "format": "json",
+  "duplicate_handling": "skip",
+  "batch_size": 100,
+  "data": "base64_encoded_card_data"
+}
+```
+
+**Parameters:**
+- `format`: Import format - "json" or "csv"
+- `duplicate_handling`: How to handle duplicates - "skip", "error", or "overwrite"
+- `batch_size`: Cards per batch (1-1000, default: 100)
+- `data`: Base64 encoded card data
+
+**JSON Format Example:**
+```json
+[
+  {
+    "card_number": "4532015112830366",
+    "card_holder": "John Doe",
+    "expiry_month": 12,
+    "expiry_year": 2028,
+    "external_id": "customer_123_card_1",
+    "metadata": "{\"customer_id\": \"123\"}"
+  }
+]
+```
+
+**CSV Format Example:**
+```csv
+card_number,card_holder,expiry_month,expiry_year,external_id,metadata
+4532015112830366,John Doe,12,2028,customer_123_card_1,"{""customer_id"": ""123""}"
+5425233430109903,Jane Smith,6,2027,customer_456_card_1,""
+```
+
+**Response:**
+```json
+{
+  "total_records": 2,
+  "processed_records": 2,
+  "successful_imports": 2,
+  "failed_imports": 0,
+  "duplicates": 0,
+  "import_id": "imp_xyz123",
+  "status": "completed",
+  "processing_time": "1.23s",
+  "tokens_generated": [
+    {
+      "record_index": 0,
+      "external_id": "customer_123_card_1",
+      "token": "tok_abcd1234",
+      "card_type": "Visa",
+      "last_four": "0366"
+    },
+    {
+      "record_index": 1,
+      "external_id": "customer_456_card_1",
+      "token": "tok_efgh5678", 
+      "card_type": "Mastercard",
+      "last_four": "9903"
+    }
+  ],
+  "errors": []
+}
+```
+
+**Status Codes:**
+- `200 OK`: Import completed successfully
+- `206 Partial Content`: Import completed with some failures
+- `400 Bad Request`: Import failed completely or validation errors
+- `401 Unauthorized`: Authentication required
+- `403 Forbidden`: Admin role required
+- `413 Payload Too Large`: Request exceeds 50MB limit
+
+**Validation Rules:**
+- Maximum 10,000 cards per import
+- Maximum 50MB request size
+- Card numbers must pass Luhn algorithm validation
+- Expiry dates must be future dates
+- External IDs are optional but recommended for database mapping
+
+**Error Response Example:**
+```json
+{
+  "total_records": 1,
+  "successful_imports": 0,
+  "failed_imports": 1,
+  "status": "failed",
+  "errors": [
+    {
+      "record_index": 0,
+      "external_id": "invalid_card",
+      "card_number_masked": "****1234",
+      "error": "Validation failed",
+      "reason": "card number fails Luhn algorithm validation"
+    }
+  ]
+}
+```
+
 ### Activity Monitoring
 
 #### GET /api/v1/activity
@@ -562,6 +671,34 @@ curl http://localhost:8090/api/v1/activity?limit=20 \\
 ```bash
 curl http://localhost:8090/api/v1/stats \\
   -H "Authorization: Bearer sess_your-session-token"
+```
+
+### Import Cards (Admin Only)
+```bash
+# Prepare card data
+cat > cards.json << 'EOF'
+[
+  {
+    "card_number": "4532015112830366",
+    "card_holder": "John Doe",
+    "expiry_month": 12,
+    "expiry_year": 2028,
+    "external_id": "customer_123_card_1"
+  }
+]
+EOF
+
+# Base64 encode and import
+CARD_DATA=$(base64 -i cards.json)
+curl -X POST http://localhost:8090/api/v1/cards/import \\
+  -H "Authorization: Bearer sess_your-session-token" \\
+  -H "Content-Type: application/json" \\
+  -d "{
+    \"format\": \"json\",
+    \"duplicate_handling\": \"skip\",
+    \"batch_size\": 100,
+    \"data\": \"$CARD_DATA\"
+  }"
 ```
 
 ## Integration Notes
