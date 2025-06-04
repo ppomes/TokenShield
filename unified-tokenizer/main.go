@@ -361,6 +361,52 @@ type ValidationResult struct {
     Data   map[string]interface{} `json:"data,omitempty"`
 }
 
+// Card import structures
+type CardImportRequest struct {
+    Format            string `json:"format"`             // "json" or "csv"
+    DuplicateHandling string `json:"duplicate_handling"` // "skip", "overwrite", "error"
+    BatchSize         int    `json:"batch_size"`         // Number of cards to process per batch
+    Data              string `json:"data"`               // Base64 encoded card data
+}
+
+type CardImportRecord struct {
+    CardNumber     string `json:"card_number" csv:"card_number"`
+    CardHolder     string `json:"card_holder,omitempty" csv:"card_holder"`
+    ExpiryMonth    int    `json:"expiry_month" csv:"expiry_month"`
+    ExpiryYear     int    `json:"expiry_year" csv:"expiry_year"`
+    ExternalID     string `json:"external_id,omitempty" csv:"external_id"`     // Client's reference ID
+    Metadata       string `json:"metadata,omitempty" csv:"metadata"`           // Additional metadata as JSON string
+}
+
+type CardImportResult struct {
+    TotalRecords    int                     `json:"total_records"`
+    ProcessedRecords int                    `json:"processed_records"`
+    SuccessfulImports int                  `json:"successful_imports"`
+    FailedImports   int                     `json:"failed_imports"`
+    Duplicates      int                     `json:"duplicates"`
+    ImportID        string                  `json:"import_id"`
+    Status          string                  `json:"status"` // "completed", "partial", "failed"
+    Errors          []CardImportError       `json:"errors,omitempty"`
+    ProcessingTime  string                  `json:"processing_time"`
+    TokensGenerated []CardImportSuccess     `json:"tokens_generated,omitempty"`
+}
+
+type CardImportError struct {
+    RecordIndex int    `json:"record_index"`
+    ExternalID  string `json:"external_id,omitempty"`
+    CardNumber  string `json:"card_number_masked,omitempty"` // Only last 4 digits
+    Error       string `json:"error"`
+    Reason      string `json:"reason"`
+}
+
+type CardImportSuccess struct {
+    RecordIndex int    `json:"record_index"`
+    ExternalID  string `json:"external_id,omitempty"`
+    Token       string `json:"token"`
+    CardType    string `json:"card_type"`
+    LastFour    string `json:"last_four"`
+}
+
 type UnifiedTokenizer struct {
     db              *sql.DB
     encryptionKey   *fernet.Key  // Legacy, kept for migration
@@ -606,6 +652,43 @@ func (ut *UnifiedTokenizer) initializeValidationConfigs() {
                 MaxLength:    100,
                 Pattern:      tokenRegex,
                 Sanitize:     true,
+            },
+        },
+    }
+    
+    // Card import endpoint validation
+    ut.validationConfigs["/api/v1/cards/import"] = ValidationConfig{
+        MaxRequestSize: 50 * 1024 * 1024, // 50MB max for bulk imports
+        AllowedMethods: []string{"POST"},
+        Rules: map[string]ValidationRule{
+            "format": {
+                FieldName:    "format",
+                Required:     true,
+                Pattern:      regexp.MustCompile(`^(json|csv)$`),
+                Sanitize:     true,
+            },
+            "duplicate_handling": {
+                FieldName:    "duplicate_handling",
+                Required:     false,
+                Pattern:      regexp.MustCompile(`^(skip|overwrite|error)$`),
+                Sanitize:     true,
+            },
+            "batch_size": {
+                FieldName:    "batch_size",
+                Required:     false,
+                MinLength:    1,
+                MaxLength:    4,
+                Pattern:      regexp.MustCompile(`^[0-9]+$`),
+                CustomValidator: func(value interface{}) error {
+                    if strVal, ok := value.(string); ok {
+                        if intVal, err := strconv.Atoi(strVal); err == nil {
+                            if intVal < 1 || intVal > 1000 {
+                                return fmt.Errorf("batch_size must be between 1 and 1000")
+                            }
+                        }
+                    }
+                    return nil
+                },
             },
         },
     }
@@ -1685,6 +1768,70 @@ func detectCardType(cardNumber string) string {
     }
     
     return "Unknown"
+}
+
+// isValidLuhn validates a card number using the Luhn algorithm
+func isValidLuhn(cardNumber string) bool {
+    // Remove spaces and dashes
+    cardNumber = strings.ReplaceAll(strings.ReplaceAll(cardNumber, " ", ""), "-", "")
+    
+    if len(cardNumber) == 0 {
+        return false
+    }
+    
+    sum := 0
+    alternate := false
+    
+    // Process from right to left
+    for i := len(cardNumber) - 1; i >= 0; i-- {
+        digit := int(cardNumber[i] - '0')
+        if digit < 0 || digit > 9 {
+            return false
+        }
+        
+        if alternate {
+            digit *= 2
+            if digit > 9 {
+                digit = digit%10 + digit/10
+            }
+        }
+        
+        sum += digit
+        alternate = !alternate
+    }
+    
+    return sum%10 == 0
+}
+
+// encryptCardNumber encrypts card data using the appropriate method
+func (ut *UnifiedTokenizer) encryptCardNumber(data string) ([]byte, error) {
+    if ut.useKEKDEK && ut.keyManager != nil {
+        // Use KEK/DEK encryption
+        encrypted, _, err := ut.keyManager.EncryptData([]byte(data))
+        return encrypted, err
+    } else {
+        // Use legacy Fernet encryption
+        return fernet.EncryptAndSign([]byte(data), ut.encryptionKey)
+    }
+}
+
+// decryptCardNumber decrypts card data using the appropriate method
+func (ut *UnifiedTokenizer) decryptCardNumber(encryptedData []byte) (string, error) {
+    if ut.useKEKDEK && ut.keyManager != nil {
+        // Try KEK/DEK decryption first
+        decrypted, err := ut.keyManager.DecryptData(encryptedData, "")
+        if err == nil {
+            return string(decrypted), nil
+        }
+        // Fall back to legacy if KEK/DEK fails
+    }
+    
+    // Use legacy Fernet decryption
+    decrypted := fernet.VerifyAndDecrypt(encryptedData, 0, []*fernet.Key{ut.encryptionKey})
+    if decrypted == nil {
+        return "", fmt.Errorf("fernet decryption failed")
+    }
+    return string(decrypted), nil
 }
 
 func (ut *UnifiedTokenizer) storeCard(token, cardNumber string) error {
@@ -3088,6 +3235,540 @@ func (ut *UnifiedTokenizer) handleCreateUser(w http.ResponseWriter, r *http.Requ
     json.NewEncoder(w).Encode(user)
 }
 
+// Card import handler
+func (ut *UnifiedTokenizer) handleCardImport(w http.ResponseWriter, r *http.Request) {
+    startTime := time.Now()
+    
+    // Get user ID from request context
+    userID := r.Header.Get("X-User-ID")
+    if userID == "" {
+        w.WriteHeader(http.StatusUnauthorized)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Authentication required"})
+        return
+    }
+    
+    // Parse request
+    var req CardImportRequest
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request format"})
+        return
+    }
+    
+    // Set defaults
+    if req.DuplicateHandling == "" {
+        req.DuplicateHandling = "skip"
+    }
+    if req.BatchSize == 0 {
+        req.BatchSize = 100
+    }
+    
+    // Generate import ID
+    importID := "imp_" + generateRandomID()
+    
+    // Decode data
+    dataBytes, err := base64.StdEncoding.DecodeString(req.Data)
+    if err != nil {
+        ut.logSecurityEvent(SecurityEvent{
+            EventType: "invalid_import_data",
+            Severity:  "medium",
+            UserID:    userID,
+            IPAddress: r.RemoteAddr,
+            UserAgent: r.UserAgent(),
+            Endpoint:  r.URL.Path,
+            Details: map[string]interface{}{
+                "error": "invalid base64 encoding",
+                "import_id": importID,
+            },
+        })
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Invalid data encoding"})
+        return
+    }
+    
+    // Parse cards based on format
+    var cards []CardImportRecord
+    switch req.Format {
+    case "json":
+        if err := json.Unmarshal(dataBytes, &cards); err != nil {
+            w.WriteHeader(http.StatusBadRequest)
+            json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON format"})
+            return
+        }
+    case "csv":
+        cards, err = ut.parseCSVCards(dataBytes)
+        if err != nil {
+            w.WriteHeader(http.StatusBadRequest)
+            json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("CSV parse error: %v", err)})
+            return
+        }
+    default:
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Unsupported format. Use 'json' or 'csv'"})
+        return
+    }
+    
+    // Validate we have cards
+    if len(cards) == 0 {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]string{"error": "No cards found in import data"})
+        return
+    }
+    
+    // Limit the number of cards per import
+    maxCards := 10000
+    if len(cards) > maxCards {
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]interface{}{
+            "error": fmt.Sprintf("Too many cards. Maximum %d cards per import", maxCards),
+            "provided": len(cards),
+            "maximum": maxCards,
+        })
+        return
+    }
+    
+    // Process the import
+    result := ut.processCardImport(importID, userID, cards, req)
+    result.ProcessingTime = time.Since(startTime).String()
+    
+    // Log import completion
+    ut.logAuditEvent(AuditEvent{
+        UserID:       userID,
+        Action:       "cards_import",
+        ResourceType: "cards",
+        ResourceID:   importID,
+        IPAddress:    r.RemoteAddr,
+        UserAgent:    r.UserAgent(),
+        Details: map[string]interface{}{
+            "total_records": result.TotalRecords,
+            "successful_imports": result.SuccessfulImports,
+            "failed_imports": result.FailedImports,
+            "duplicates": result.Duplicates,
+            "processing_time": result.ProcessingTime,
+            "format": req.Format,
+            "duplicate_handling": req.DuplicateHandling,
+        },
+    })
+    
+    // Return result
+    if result.FailedImports > 0 && result.SuccessfulImports == 0 {
+        w.WriteHeader(http.StatusBadRequest)
+    } else if result.FailedImports > 0 {
+        w.WriteHeader(http.StatusPartialContent)
+    } else {
+        w.WriteHeader(http.StatusOK)
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(result)
+}
+
+// parseCSVCards parses CSV data into CardImportRecord slice
+func (ut *UnifiedTokenizer) parseCSVCards(data []byte) ([]CardImportRecord, error) {
+    lines := strings.Split(string(data), "\n")
+    if len(lines) < 2 {
+        return nil, fmt.Errorf("CSV must have at least a header and one data row")
+    }
+    
+    // Parse header
+    header := strings.Split(strings.TrimSpace(lines[0]), ",")
+    headerMap := make(map[string]int)
+    for i, col := range header {
+        headerMap[strings.TrimSpace(strings.Trim(col, "\""))] = i
+    }
+    
+    // Required columns
+    required := []string{"card_number", "expiry_month", "expiry_year"}
+    for _, req := range required {
+        if _, exists := headerMap[req]; !exists {
+            return nil, fmt.Errorf("missing required column: %s", req)
+        }
+    }
+    
+    var cards []CardImportRecord
+    for i, line := range lines[1:] {
+        line = strings.TrimSpace(line)
+        if line == "" {
+            continue
+        }
+        
+        cols := strings.Split(line, ",")
+        if len(cols) < len(required) {
+            return nil, fmt.Errorf("row %d: insufficient columns", i+2)
+        }
+        
+        // Clean and parse columns
+        for j := range cols {
+            cols[j] = strings.TrimSpace(strings.Trim(cols[j], "\""))
+        }
+        
+        card := CardImportRecord{}
+        
+        // Required fields
+        card.CardNumber = cols[headerMap["card_number"]]
+        
+        if monthStr := cols[headerMap["expiry_month"]]; monthStr != "" {
+            if month, err := strconv.Atoi(monthStr); err == nil {
+                card.ExpiryMonth = month
+            } else {
+                return nil, fmt.Errorf("row %d: invalid expiry_month: %s", i+2, monthStr)
+            }
+        }
+        
+        if yearStr := cols[headerMap["expiry_year"]]; yearStr != "" {
+            if year, err := strconv.Atoi(yearStr); err == nil {
+                card.ExpiryYear = year
+            } else {
+                return nil, fmt.Errorf("row %d: invalid expiry_year: %s", i+2, yearStr)
+            }
+        }
+        
+        // Optional fields
+        if idx, exists := headerMap["card_holder"]; exists && idx < len(cols) {
+            card.CardHolder = cols[idx]
+        }
+        if idx, exists := headerMap["external_id"]; exists && idx < len(cols) {
+            card.ExternalID = cols[idx]
+        }
+        if idx, exists := headerMap["metadata"]; exists && idx < len(cols) {
+            card.Metadata = cols[idx]
+        }
+        
+        cards = append(cards, card)
+    }
+    
+    return cards, nil
+}
+
+// processCardImport processes a batch of cards for import
+func (ut *UnifiedTokenizer) processCardImport(importID, userID string, cards []CardImportRecord, req CardImportRequest) CardImportResult {
+    result := CardImportResult{
+        TotalRecords:    len(cards),
+        ImportID:        importID,
+        Status:          "completed",
+        TokensGenerated: make([]CardImportSuccess, 0),
+        Errors:          make([]CardImportError, 0),
+    }
+    
+    // Process in batches
+    batchSize := req.BatchSize
+    if batchSize > 1000 {
+        batchSize = 1000
+    }
+    
+    for i := 0; i < len(cards); i += batchSize {
+        end := i + batchSize
+        if end > len(cards) {
+            end = len(cards)
+        }
+        
+        batch := cards[i:end]
+        ut.processBatch(batch, i, &result, req)
+    }
+    
+    // Update final status
+    if result.FailedImports > 0 && result.SuccessfulImports == 0 {
+        result.Status = "failed"
+    } else if result.FailedImports > 0 {
+        result.Status = "partial"
+    }
+    
+    return result
+}
+
+// processBatch processes a single batch of cards
+func (ut *UnifiedTokenizer) processBatch(batch []CardImportRecord, startIndex int, result *CardImportResult, req CardImportRequest) {
+    // Start transaction for batch
+    tx, err := ut.db.Begin()
+    if err != nil {
+        for j, card := range batch {
+            result.Errors = append(result.Errors, CardImportError{
+                RecordIndex: startIndex + j,
+                ExternalID:  card.ExternalID,
+                CardNumber:  maskCardNumber(card.CardNumber),
+                Error:       "Database transaction error",
+                Reason:      err.Error(),
+            })
+            result.FailedImports++
+        }
+        return
+    }
+    
+    batchSuccess := true
+    
+    for j, card := range batch {
+        recordIndex := startIndex + j
+        result.ProcessedRecords++
+        
+        // Validate card
+        if err := ut.validateCardRecord(card); err != nil {
+            result.Errors = append(result.Errors, CardImportError{
+                RecordIndex: recordIndex,
+                ExternalID:  card.ExternalID,
+                CardNumber:  maskCardNumber(card.CardNumber),
+                Error:       "Validation failed",
+                Reason:      err.Error(),
+            })
+            result.FailedImports++
+            batchSuccess = false
+            continue
+        }
+        
+        // Check for duplicates
+        exists, existingToken, err := ut.checkCardExists(card.CardNumber)
+        if err != nil {
+            result.Errors = append(result.Errors, CardImportError{
+                RecordIndex: recordIndex,
+                ExternalID:  card.ExternalID,
+                CardNumber:  maskCardNumber(card.CardNumber),
+                Error:       "Duplicate check failed",
+                Reason:      err.Error(),
+            })
+            result.FailedImports++
+            batchSuccess = false
+            continue
+        }
+        
+        if exists {
+            result.Duplicates++
+            switch req.DuplicateHandling {
+            case "skip":
+                // Skip this card
+                continue
+            case "error":
+                result.Errors = append(result.Errors, CardImportError{
+                    RecordIndex: recordIndex,
+                    ExternalID:  card.ExternalID,
+                    CardNumber:  maskCardNumber(card.CardNumber),
+                    Error:       "Duplicate card",
+                    Reason:      fmt.Sprintf("Card already exists with token: %s", existingToken),
+                })
+                result.FailedImports++
+                batchSuccess = false
+                continue
+            case "overwrite":
+                // Continue with processing, will update existing record
+            }
+        }
+        
+        // Tokenize card
+        token, cardType, err := ut.tokenizeCardForImport(card, tx)
+        if err != nil {
+            result.Errors = append(result.Errors, CardImportError{
+                RecordIndex: recordIndex,
+                ExternalID:  card.ExternalID,
+                CardNumber:  maskCardNumber(card.CardNumber),
+                Error:       "Tokenization failed",
+                Reason:      err.Error(),
+            })
+            result.FailedImports++
+            batchSuccess = false
+            continue
+        }
+        
+        result.SuccessfulImports++
+        result.TokensGenerated = append(result.TokensGenerated, CardImportSuccess{
+            RecordIndex: recordIndex,
+            ExternalID:  card.ExternalID,
+            Token:       token,
+            CardType:    cardType,
+            LastFour:    card.CardNumber[len(card.CardNumber)-4:],
+        })
+    }
+    
+    // Commit or rollback transaction
+    if batchSuccess {
+        if err := tx.Commit(); err != nil {
+            // If commit fails, mark all cards in this batch as failed
+            for j, card := range batch {
+                result.Errors = append(result.Errors, CardImportError{
+                    RecordIndex: startIndex + j,
+                    ExternalID:  card.ExternalID,
+                    CardNumber:  maskCardNumber(card.CardNumber),
+                    Error:       "Transaction commit failed",
+                    Reason:      err.Error(),
+                })
+                result.FailedImports++
+            }
+            // Remove successful imports from this batch
+            result.SuccessfulImports -= len(batch)
+            result.TokensGenerated = result.TokensGenerated[:len(result.TokensGenerated)-len(batch)]
+        }
+    } else {
+        tx.Rollback()
+    }
+}
+
+// Helper functions for card import
+
+// maskCardNumber masks a credit card number for logging (shows only last 4 digits)
+func maskCardNumber(cardNumber string) string {
+    if len(cardNumber) < 4 {
+        return "****"
+    }
+    return "****" + cardNumber[len(cardNumber)-4:]
+}
+
+// validateCardRecord validates a single card record
+func (ut *UnifiedTokenizer) validateCardRecord(card CardImportRecord) error {
+    // Validate card number
+    if card.CardNumber == "" {
+        return fmt.Errorf("card number is required")
+    }
+    
+    // Remove spaces and dashes
+    cleanCard := strings.ReplaceAll(strings.ReplaceAll(card.CardNumber, " ", ""), "-", "")
+    if len(cleanCard) < 13 || len(cleanCard) > 19 {
+        return fmt.Errorf("card number must be between 13 and 19 digits")
+    }
+    
+    // Check if all characters are digits
+    for _, char := range cleanCard {
+        if char < '0' || char > '9' {
+            return fmt.Errorf("card number must contain only digits")
+        }
+    }
+    
+    // Validate using Luhn algorithm
+    if !isValidLuhn(cleanCard) {
+        return fmt.Errorf("card number fails Luhn algorithm validation")
+    }
+    
+    // Validate expiry
+    if card.ExpiryMonth < 1 || card.ExpiryMonth > 12 {
+        return fmt.Errorf("expiry month must be between 1 and 12")
+    }
+    
+    currentYear := time.Now().Year()
+    if card.ExpiryYear < currentYear || card.ExpiryYear > currentYear+50 {
+        return fmt.Errorf("expiry year must be between %d and %d", currentYear, currentYear+50)
+    }
+    
+    // Check if card is expired
+    currentTime := time.Now()
+    expiryTime := time.Date(card.ExpiryYear, time.Month(card.ExpiryMonth+1), 1, 0, 0, 0, 0, time.UTC).Add(-time.Second)
+    if currentTime.After(expiryTime) {
+        return fmt.Errorf("card is expired")
+    }
+    
+    // Validate card holder name if provided
+    if card.CardHolder != "" && len(card.CardHolder) > 100 {
+        return fmt.Errorf("card holder name too long (max 100 characters)")
+    }
+    
+    // Validate external ID if provided
+    if card.ExternalID != "" && len(card.ExternalID) > 64 {
+        return fmt.Errorf("external ID too long (max 64 characters)")
+    }
+    
+    return nil
+}
+
+// checkCardExists checks if a card already exists in the database
+func (ut *UnifiedTokenizer) checkCardExists(cardNumber string) (bool, string, error) {
+    // Clean card number
+    cleanCard := strings.ReplaceAll(strings.ReplaceAll(cardNumber, " ", ""), "-", "")
+    
+    // Get last 4 digits for lookup
+    lastFour := cleanCard[len(cleanCard)-4:]
+    
+    var token string
+    var encryptedCard []byte
+    
+    rows, err := ut.db.Query(`
+        SELECT token, card_number_encrypted 
+        FROM credit_cards 
+        WHERE last_four_digits = ? AND is_active = TRUE
+    `, lastFour)
+    
+    if err != nil {
+        return false, "", err
+    }
+    defer rows.Close()
+    
+    // Check each card with matching last 4 digits
+    for rows.Next() {
+        if err := rows.Scan(&token, &encryptedCard); err != nil {
+            continue
+        }
+        
+        // Decrypt and compare
+        decryptedCard, err := ut.decryptCardNumber(encryptedCard)
+        if err != nil {
+            continue
+        }
+        
+        if decryptedCard == cleanCard {
+            return true, token, nil
+        }
+    }
+    
+    return false, "", nil
+}
+
+// tokenizeCardForImport tokenizes a card during import process
+func (ut *UnifiedTokenizer) tokenizeCardForImport(card CardImportRecord, tx *sql.Tx) (string, string, error) {
+    // Clean card number
+    cleanCard := strings.ReplaceAll(strings.ReplaceAll(card.CardNumber, " ", ""), "-", "")
+    
+    // Generate token
+    token := ut.generateToken()
+    
+    // Detect card type
+    cardType := detectCardType(cleanCard)
+    
+    // Encrypt card number
+    encryptedCard, err := ut.encryptCardNumber(cleanCard)
+    if err != nil {
+        return "", "", fmt.Errorf("failed to encrypt card: %v", err)
+    }
+    
+    // Encrypt card holder name if provided
+    var encryptedHolder []byte
+    if card.CardHolder != "" {
+        encryptedHolder, err = ut.encryptCardNumber(card.CardHolder)
+        if err != nil {
+            return "", "", fmt.Errorf("failed to encrypt card holder: %v", err)
+        }
+    }
+    
+    // Get first 6 and last 4 digits
+    firstSix := cleanCard[:6]
+    lastFour := cleanCard[len(cleanCard)-4:]
+    
+    // Get encryption key ID if using KEK/DEK
+    var keyID *string
+    if ut.useKEKDEK && ut.keyManager != nil {
+        if currentKeyID := ut.keyManager.getCurrentDEKID(); currentKeyID != "" {
+            keyID = &currentKeyID
+        }
+    }
+    
+    // Insert into database using transaction
+    _, err = tx.Exec(`
+        INSERT INTO credit_cards (
+            token, card_number_encrypted, card_holder_name_encrypted,
+            expiry_month, expiry_year, card_type, last_four_digits, first_six_digits,
+            encryption_key_id, created_at, is_active
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), TRUE)
+        ON DUPLICATE KEY UPDATE
+            card_number_encrypted = VALUES(card_number_encrypted),
+            card_holder_name_encrypted = VALUES(card_holder_name_encrypted),
+            expiry_month = VALUES(expiry_month),
+            expiry_year = VALUES(expiry_year),
+            card_type = VALUES(card_type),
+            encryption_key_id = VALUES(encryption_key_id),
+            updated_at = NOW()
+    `, token, encryptedCard, encryptedHolder, card.ExpiryMonth, card.ExpiryYear, 
+       cardType, lastFour, firstSix, keyID)
+    
+    if err != nil {
+        return "", "", fmt.Errorf("failed to store card: %v", err)
+    }
+    
+    return token, cardType, nil
+}
+
 func (ut *UnifiedTokenizer) handleGetUser(w http.ResponseWriter, r *http.Request) {
     username := strings.TrimPrefix(r.URL.Path, "/api/v1/users/")
     
@@ -3302,6 +3983,15 @@ func (ut *UnifiedTokenizer) startAPIServer() {
     
     // Stats
     mux.HandleFunc("/api/v1/stats", ut.requirePermission(ut.handleAPIStats, PermStatsRead))
+    
+    // Card import endpoint (requires admin permissions and validation)
+    mux.HandleFunc("/api/v1/cards/import", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method == "POST" {
+            ut.validationMiddleware("/api/v1/cards/import")(ut.requirePermission(ut.handleCardImport, PermSystemAdmin))(w, r)
+        } else {
+            w.WriteHeader(http.StatusMethodNotAllowed)
+        }
+    })
     
     // User management endpoints (with validation)
     mux.HandleFunc("/api/v1/users", func(w http.ResponseWriter, r *http.Request) {
@@ -3617,6 +4307,13 @@ func NewKeyManager(db *sql.DB) (*KeyManager, error) {
     }
     
     return km, nil
+}
+
+// getCurrentDEKID returns the current active DEK ID
+func (km *KeyManager) getCurrentDEKID() string {
+    km.mu.RLock()
+    defer km.mu.RUnlock()
+    return km.currentDEKID
 }
 
 func (km *KeyManager) loadOrGenerateKEK() error {
