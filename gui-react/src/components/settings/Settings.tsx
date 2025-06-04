@@ -64,8 +64,8 @@ export function Settings() {
       return;
     }
     
-    if (passwordForm.newPassword.length < 8) {
-      setError('Password must be at least 8 characters long');
+    if (passwordForm.newPassword.length < 12) {
+      setError('Password must be at least 12 characters long');
       return;
     }
     
@@ -255,7 +255,7 @@ export function Settings() {
               value={passwordForm.newPassword}
               onChange={(e) => setPasswordForm({ ...passwordForm, newPassword: e.target.value })}
               fullWidth
-              helperText="Minimum 8 characters"
+              helperText="Minimum 12 characters"
             />
             <TextField
               label="Confirm New Password"

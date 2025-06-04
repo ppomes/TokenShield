@@ -29,7 +29,7 @@ export function PasswordChangeDialog() {
   const [loading, setLoading] = useState(false);
 
   const passwordRequirements = [
-    { regex: /.{8,}/, text: 'At least 8 characters' },
+    { regex: /.{12,}/, text: 'At least 12 characters' },
     { regex: /[A-Z]/, text: 'At least one uppercase letter' },
     { regex: /[a-z]/, text: 'At least one lowercase letter' },
     { regex: /[0-9]/, text: 'At least one digit' },

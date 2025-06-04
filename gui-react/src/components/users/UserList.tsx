@@ -263,7 +263,7 @@ export function UserList() {
               onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
               fullWidth
               required
-              helperText="Minimum 8 characters"
+              helperText="Minimum 12 characters"
             />
             <FormControl fullWidth>
               <InputLabel>Role</InputLabel>

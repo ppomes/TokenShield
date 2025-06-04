@@ -2024,8 +2024,8 @@ func (ut *UnifiedTokenizer) handleChangePassword(w http.ResponseWriter, r *http.
 }
 
 func (ut *UnifiedTokenizer) validatePasswordStrength(password string) error {
-    if len(password) < 8 {
-        return fmt.Errorf("password must be at least 8 characters long")
+    if len(password) < 12 {
+        return fmt.Errorf("password must be at least 12 characters long")
     }
     
     var hasUpper, hasLower, hasDigit, hasSpecial bool

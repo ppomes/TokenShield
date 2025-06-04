@@ -203,5 +203,6 @@ INSERT IGNORE INTO encryption_keys (
 -- Operator: ["tokens.read", "tokens.write", "tokens.delete", "activity.read", "stats.read"]
 -- Viewer: ["tokens.read", "activity.read", "stats.read"]
 
--- NOTE: Default admin user will be created by the application at startup
--- Username: admin, Password: admin123 (CHANGE IMMEDIATELY IN PRODUCTION)
+-- NOTE: Default admin user will be created by the application at startup if none exists
+-- Username: admin, Password: [randomly generated 16-character password shown in logs]
+-- The password is displayed only once during initial startup - save it immediately!
