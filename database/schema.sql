@@ -135,6 +135,25 @@ CREATE TABLE IF NOT EXISTS user_audit_log (
     INDEX idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Security audit log for security events and violations
+CREATE TABLE IF NOT EXISTS security_audit_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    event_type VARCHAR(50) NOT NULL COMMENT 'login_failed, rate_limit_exceeded, session_expired, etc.',
+    severity VARCHAR(20) NOT NULL DEFAULT 'info' COMMENT 'low, medium, high, critical',
+    user_id VARCHAR(64) COMMENT 'User involved (if any)',
+    username VARCHAR(255) COMMENT 'Username for failed login attempts',
+    ip_address VARCHAR(45) NOT NULL,
+    user_agent TEXT,
+    endpoint VARCHAR(255) COMMENT 'API endpoint accessed',
+    details JSON COMMENT 'Additional security event details',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_event_type (event_type),
+    INDEX idx_severity (severity),
+    INDEX idx_ip_address (ip_address),
+    INDEX idx_created_at (created_at),
+    INDEX idx_user_id (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Password reset tokens
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
     id INT AUTO_INCREMENT PRIMARY KEY,
