@@ -155,6 +155,10 @@ type UnifiedTokenizer struct {
     tokenFormat     string // "prefix" for tok_ format, "luhn" for Luhn-valid format
     useKEKDEK       bool   // Whether to use KEK/DEK encryption
     authRateLimiter *RateLimiter // Rate limiter for authentication endpoints
+    // Session security configuration
+    sessionTimeout       time.Duration // Absolute session timeout
+    sessionIdleTimeout   time.Duration // Idle session timeout 
+    maxConcurrentSessions int           // Maximum concurrent sessions per user
     mu              sync.RWMutex
 }
 
@@ -307,6 +311,10 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
         tokenFormat:   tokenFormat,
         useKEKDEK:     useKEKDEK,
         authRateLimiter: NewRateLimiter(5, 15*time.Minute, 15*time.Minute), // 5 attempts per 15 minutes, 15 minute block
+        // Session security configuration with environment variable support
+        sessionTimeout:       parseTimeEnv("SESSION_TIMEOUT", "24h"),           // Default 24 hours
+        sessionIdleTimeout:   parseTimeEnv("SESSION_IDLE_TIMEOUT", "4h"),       // Default 4 hours
+        maxConcurrentSessions: parseIntEnv("MAX_CONCURRENT_SESSIONS", 5),       // Default 5 sessions per user
     }
     
     // Initialize KeyManager if KEK/DEK is enabled
@@ -337,6 +345,26 @@ func getEnv(key, defaultValue string) string {
         return value
     }
     return defaultValue
+}
+
+func parseTimeEnv(key, defaultValue string) time.Duration {
+    value := getEnv(key, defaultValue)
+    duration, err := time.ParseDuration(value)
+    if err != nil {
+        log.Printf("Warning: Invalid duration for %s: %s, using default: %s", key, value, defaultValue)
+        duration, _ = time.ParseDuration(defaultValue)
+    }
+    return duration
+}
+
+func parseIntEnv(key string, defaultValue int) int {
+    value := getEnv(key, fmt.Sprintf("%d", defaultValue))
+    result, err := strconv.Atoi(value)
+    if err != nil {
+        log.Printf("Warning: Invalid integer for %s: %s, using default: %d", key, value, defaultValue)
+        return defaultValue
+    }
+    return result
 }
 
 func min(a, b int) int {
@@ -3635,19 +3663,88 @@ func (ut *UnifiedTokenizer) authenticateUser(username, password string) (*User, 
 }
 
 func (ut *UnifiedTokenizer) createSession(user *User, ipAddress, userAgent string) (*UserSession, error) {
-    sessionID := "sess_" + generateRandomID()
-    expiresAt := time.Now().Add(24 * time.Hour) // 24 hour sessions
+    // Clean up expired sessions first
+    ut.cleanupExpiredSessions()
     
-    _, err := ut.db.Exec(`
+    // Check concurrent session limits
+    var activeSessionCount int
+    err := ut.db.QueryRow(`
+        SELECT COUNT(*) FROM user_sessions 
+        WHERE user_id = ? AND is_active = TRUE AND expires_at > NOW()
+    `, user.UserID).Scan(&activeSessionCount)
+    
+    if err != nil {
+        log.Printf("Error checking active sessions for user %s: %v", user.UserID, err)
+    }
+    
+    // Enforce concurrent session limits
+    if activeSessionCount >= ut.maxConcurrentSessions {
+        // Log security event for session limit exceeded
+        ut.logSecurityEvent(SecurityEvent{
+            EventType: "session_limit_exceeded",
+            Severity:  "medium",
+            UserID:    user.UserID,
+            Username:  user.Username,
+            IPAddress: ipAddress,
+            UserAgent: userAgent,
+            Details: map[string]interface{}{
+                "active_sessions": activeSessionCount,
+                "max_allowed": ut.maxConcurrentSessions,
+                "action": "oldest_session_invalidated",
+            },
+        })
+        
+        // Invalidate oldest session for this user
+        _, err = ut.db.Exec(`
+            UPDATE user_sessions 
+            SET is_active = FALSE 
+            WHERE user_id = ? AND is_active = TRUE 
+            ORDER BY created_at ASC 
+            LIMIT 1
+        `, user.UserID)
+        
+        if err != nil {
+            log.Printf("Error invalidating oldest session for user %s: %v", user.UserID, err)
+        }
+    }
+    
+    // Generate session ID and calculate expiry times
+    sessionID := "sess_" + generateRandomID()
+    now := time.Now()
+    expiresAt := now.Add(ut.sessionTimeout)        // Absolute session timeout
+    idleExpiresAt := now.Add(ut.sessionIdleTimeout) // Idle timeout (will be updated on activity)
+    
+    // Use the shorter of absolute or idle timeout for initial expiry
+    if idleExpiresAt.Before(expiresAt) {
+        expiresAt = idleExpiresAt
+    }
+    
+    // Create session in database
+    _, err = ut.db.Exec(`
         INSERT INTO user_sessions (
             session_id, user_id, ip_address, user_agent, 
             created_at, expires_at, last_activity_at, is_active
-        ) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), TRUE)
-    `, sessionID, user.UserID, ipAddress, userAgent, expiresAt)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)
+    `, sessionID, user.UserID, ipAddress, userAgent, now, expiresAt, now)
     
     if err != nil {
         return nil, fmt.Errorf("failed to create session: %v", err)
     }
+    
+    // Log successful session creation
+    ut.logAuditEvent(AuditEvent{
+        UserID:       user.UserID,
+        Action:       "session_created",
+        ResourceType: "session",
+        ResourceID:   sessionID,
+        IPAddress:    ipAddress,
+        UserAgent:    userAgent,
+        Details: map[string]interface{}{
+            "session_timeout": ut.sessionTimeout.String(),
+            "idle_timeout": ut.sessionIdleTimeout.String(),
+            "max_concurrent": ut.maxConcurrentSessions,
+        },
+    })
     
     session := &UserSession{
         SessionID:    sessionID,
@@ -3655,12 +3752,120 @@ func (ut *UnifiedTokenizer) createSession(user *User, ipAddress, userAgent strin
         User:         user,
         IPAddress:    ipAddress,
         UserAgent:    userAgent,
-        CreatedAt:    time.Now(),
+        CreatedAt:    now,
         ExpiresAt:    expiresAt,
-        LastActivity: time.Now(),
+        LastActivity: now,
     }
     
     return session, nil
+}
+
+// cleanupExpiredSessions removes expired sessions from the database
+func (ut *UnifiedTokenizer) cleanupExpiredSessions() {
+    // Clean up expired sessions (both absolute and idle timeouts)
+    result, err := ut.db.Exec(`
+        UPDATE user_sessions 
+        SET is_active = FALSE 
+        WHERE is_active = TRUE 
+          AND (expires_at <= NOW() 
+               OR (last_activity_at <= DATE_SUB(NOW(), INTERVAL ? SECOND)))
+    `, int(ut.sessionIdleTimeout.Seconds()))
+    
+    if err != nil {
+        log.Printf("Error cleaning up expired sessions: %v", err)
+        return
+    }
+    
+    // Log cleanup activity if sessions were cleaned
+    if rowsAffected, err := result.RowsAffected(); err == nil && rowsAffected > 0 {
+        log.Printf("Cleaned up %d expired sessions", rowsAffected)
+        
+        // Log security event for session cleanup
+        ut.logSecurityEvent(SecurityEvent{
+            EventType: "session_cleanup",
+            Severity:  "info",
+            IPAddress: "system",
+            Details: map[string]interface{}{
+                "sessions_cleaned": rowsAffected,
+                "cleanup_reason": "expired_or_idle",
+                "idle_timeout": ut.sessionIdleTimeout.String(),
+            },
+        })
+    }
+}
+
+// invalidateUserSessions invalidates all sessions for a specific user
+func (ut *UnifiedTokenizer) invalidateUserSessions(userID string, reason string) error {
+    result, err := ut.db.Exec(`
+        UPDATE user_sessions 
+        SET is_active = FALSE 
+        WHERE user_id = ? AND is_active = TRUE
+    `, userID)
+    
+    if err != nil {
+        return fmt.Errorf("failed to invalidate sessions for user %s: %v", userID, err)
+    }
+    
+    rowsAffected, _ := result.RowsAffected()
+    if rowsAffected > 0 {
+        log.Printf("Invalidated %d sessions for user %s (reason: %s)", rowsAffected, userID, reason)
+        
+        // Log security event for session invalidation
+        ut.logSecurityEvent(SecurityEvent{
+            EventType: "sessions_invalidated",
+            Severity:  "medium",
+            UserID:    userID,
+            IPAddress: "system",
+            Details: map[string]interface{}{
+                "sessions_invalidated": rowsAffected,
+                "reason": reason,
+                "action": "bulk_session_invalidation",
+            },
+        })
+    }
+    
+    return nil
+}
+
+// invalidateSession invalidates a specific session
+func (ut *UnifiedTokenizer) invalidateSession(sessionID string, reason string) error {
+    var userID string
+    err := ut.db.QueryRow(`
+        SELECT user_id FROM user_sessions WHERE session_id = ? AND is_active = TRUE
+    `, sessionID).Scan(&userID)
+    
+    if err == sql.ErrNoRows {
+        return nil // Session already invalid or doesn't exist
+    } else if err != nil {
+        return fmt.Errorf("failed to find session %s: %v", sessionID, err)
+    }
+    
+    _, err = ut.db.Exec(`
+        UPDATE user_sessions 
+        SET is_active = FALSE 
+        WHERE session_id = ?
+    `, sessionID)
+    
+    if err != nil {
+        return fmt.Errorf("failed to invalidate session %s: %v", sessionID, err)
+    }
+    
+    log.Printf("Invalidated session %s (reason: %s)", sessionID, reason)
+    
+    // Log security event for single session invalidation
+    ut.logSecurityEvent(SecurityEvent{
+        EventType: "session_invalidated",
+        Severity:  "info",
+        UserID:    userID,
+        IPAddress: "system",
+        Details: map[string]interface{}{
+            "session_id": sessionID,
+            "reason": reason,
+            "action": "single_session_invalidation",
+        },
+    })
+    
+    return nil
 }
 
 func (ut *UnifiedTokenizer) validateSession(sessionID string) (*UserSession, error) {
@@ -3694,12 +3899,53 @@ func (ut *UnifiedTokenizer) validateSession(sessionID string) (*UserSession, err
         return nil, err
     }
     
-    // Update last activity
-    ut.db.Exec(`
+    // Check idle timeout
+    now := time.Now()
+    if now.Sub(session.LastActivity) > ut.sessionIdleTimeout {
+        // Session has been idle too long, invalidate it
+        ut.db.Exec(`
+            UPDATE user_sessions 
+            SET is_active = FALSE 
+            WHERE session_id = ?
+        `, sessionID)
+        
+        // Log security event for idle session expiry
+        ut.logSecurityEvent(SecurityEvent{
+            EventType: "session_idle_expired",
+            Severity:  "info",
+            UserID:    session.UserID,
+            Username:  user.Username,
+            IPAddress: session.IPAddress,
+            Details: map[string]interface{}{
+                "session_id": sessionID,
+                "idle_duration": now.Sub(session.LastActivity).String(),
+                "idle_timeout": ut.sessionIdleTimeout.String(),
+            },
+        })
+        
+        return nil, errors.New("session expired due to inactivity")
+    }
+    
+    // Calculate new expiry time based on idle timeout and absolute timeout
+    absoluteExpiry := session.CreatedAt.Add(ut.sessionTimeout)
+    idleExpiry := now.Add(ut.sessionIdleTimeout)
+    
+    // Use the earlier of the two expiry times
+    newExpiresAt := idleExpiry
+    if absoluteExpiry.Before(idleExpiry) {
+        newExpiresAt = absoluteExpiry
+    }
+    
+    // Update last activity and potentially extend expiry
+    _, err = ut.db.Exec(`
         UPDATE user_sessions 
-        SET last_activity_at = NOW() 
+        SET last_activity_at = NOW(), expires_at = ?
         WHERE session_id = ?
-    `, sessionID)
+    `, newExpiresAt, sessionID)
+    
+    if err != nil {
+        log.Printf("Error updating session activity for %s: %v", sessionID, err)
+    }
     
     // Parse user data
     user.UserID = session.UserID
@@ -3708,7 +3954,11 @@ func (ut *UnifiedTokenizer) validateSession(sessionID string) (*UserSession, err
         user.LastLoginAt = &lastLoginAt.Time
     }
     
+    // Update session object with new values
     session.User = &user
+    session.LastActivity = now
+    session.ExpiresAt = newExpiresAt
+    
     return &session, nil
 }
 
@@ -3856,6 +4106,25 @@ func (ut *UnifiedTokenizer) requirePermission(handler http.HandlerFunc, permissi
     }
 }
 
+// startSessionCleanupService runs a background cleanup service for expired sessions
+func (ut *UnifiedTokenizer) startSessionCleanupService() {
+    // Run cleanup immediately on startup
+    ut.cleanupExpiredSessions()
+    
+    // Set up periodic cleanup every 15 minutes
+    ticker := time.NewTicker(15 * time.Minute)
+    defer ticker.Stop()
+    
+    log.Printf("Session cleanup service started (runs every 15 minutes)")
+    
+    for {
+        select {
+        case <-ticker.C:
+            ut.cleanupExpiredSessions()
+        }
+    }
+}
+
 func main() {
     log.SetFlags(log.LstdFlags | log.Lshortfile)
     
@@ -3875,6 +4144,9 @@ func main() {
     if err := ut.createDefaultAdminUser(); err != nil {
         log.Printf("Warning: Failed to create default admin user: %v", err)
     }
+    
+    // Start background session cleanup goroutine
+    go ut.startSessionCleanupService()
     
     // Start all three servers
     go ut.startHTTPServer()
