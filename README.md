@@ -162,7 +162,11 @@ Password: Xy#9mK@2pL&4nQ8w
 ## Testing the System
 
 ### 1. Access the Web GUI Dashboard
-Open your browser and go to: **http://localhost:8081**
+
+You can access either of the two GUI interfaces:
+
+- **Original GUI**: http://localhost:8081 (HTML/CSS/JS interface)
+- **React GUI**: http://localhost:8082 (Modern TypeScript React interface)
 
 #### Initial Login
 1. Get the admin password from the logs:
@@ -316,7 +320,8 @@ curl http://localhost:8090/api/v1/activity?limit=50 \
   - 8080 (HTTP Tokenization)
   - 1344 (ICAP Detokenization)
   - 8090 (Management API)
-- **GUI Dashboard**: 8081 (Web Interface)
+- **GUI Dashboard (Original)**: 8081 (HTML/CSS/JS Web Interface)
+- **GUI Dashboard (React)**: 8082 (Modern React TypeScript Interface)
 - **MySQL**: 3306
 - **Squid**: 3128 (HTTP), 3129 (HTTPS)
 - **Dummy App**: 8000

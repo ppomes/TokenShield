@@ -131,12 +131,27 @@ services:
       - tokenshield-net
     restart: unless-stopped
 
-  # TokenShield GUI Dashboard
+  # TokenShield GUI Dashboard (Original)
   tokenshield-gui:
     build: ./gui
     container_name: tokenshield-gui
     ports:
       - "8081:80"
+    networks:
+      - tokenshield-net
+    depends_on:
+      - unified-tokenizer
+    restart: unless-stopped
+
+  # TokenShield React GUI Dashboard
+  tokenshield-react-gui:
+    build: ./gui-react
+    container_name: tokenshield-react-gui
+    environment:
+      # Optional: Override default API backend (defaults to unified-tokenizer:8090)
+      API_BACKEND: ${REACT_API_BACKEND:-unified-tokenizer:8090}
+    ports:
+      - "8082:80"
     networks:
       - tokenshield-net
     depends_on:
