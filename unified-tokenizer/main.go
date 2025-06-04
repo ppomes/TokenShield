@@ -11,6 +11,7 @@ import (
     "encoding/json"
     "errors"
     "fmt"
+    "html"
     "io"
     "log"
     "math/rand"
@@ -119,6 +120,194 @@ func (rl *RateLimiter) Cleanup() {
     }
 }
 
+// Input validation and sanitization functions
+var (
+    // Common regex patterns for validation
+    usernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,50}$`)
+    emailRegex    = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+    alphanumericRegex = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
+    tokenRegex    = regexp.MustCompile(`^(tok_[a-zA-Z0-9+/=]+|[0-9]{13,19})$`)
+    uuidRegex     = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+    
+    // SQL injection patterns
+    sqlInjectionPatterns = []*regexp.Regexp{
+        regexp.MustCompile(`(?i)(union\s+select|insert\s+into|delete\s+from|update\s+set|drop\s+table|create\s+table)`),
+        regexp.MustCompile(`(?i)(exec\s*\(|execute\s*\(|sp_executesql)`),
+        regexp.MustCompile(`(?i)(script\s*>|javascript:|vbscript:|onload\s*=|onerror\s*=)`),
+        regexp.MustCompile(`(?i)(union.*select|select.*from.*where|1\s*=\s*1|1\s*or\s*1)`),
+    }
+    
+    // XSS patterns
+    xssPatterns = []*regexp.Regexp{
+        regexp.MustCompile(`(?i)<script[^>]*>.*?</script>`),
+        regexp.MustCompile(`(?i)javascript:`),
+        regexp.MustCompile(`(?i)vbscript:`),
+        regexp.MustCompile(`(?i)on\w+\s*=`),
+        regexp.MustCompile(`(?i)<iframe[^>]*>`),
+    }
+)
+
+// sanitizeString removes dangerous characters and escapes HTML
+func sanitizeString(input string) string {
+    // Remove null bytes and control characters
+    cleaned := strings.Map(func(r rune) rune {
+        if r == 0 || (r < 32 && r != 9 && r != 10 && r != 13) {
+            return -1
+        }
+        return r
+    }, input)
+    
+    // HTML escape the string
+    cleaned = html.EscapeString(cleaned)
+    
+    // Remove any remaining dangerous patterns
+    for _, pattern := range xssPatterns {
+        cleaned = pattern.ReplaceAllString(cleaned, "")
+    }
+    
+    return strings.TrimSpace(cleaned)
+}
+
+// detectSQLInjection checks for SQL injection patterns
+func detectSQLInjection(input string) bool {
+    lowercaseInput := strings.ToLower(input)
+    for _, pattern := range sqlInjectionPatterns {
+        if pattern.MatchString(lowercaseInput) {
+            return true
+        }
+    }
+    return false
+}
+
+// validateField validates a single field against its rules
+func validateField(fieldName string, value interface{}, rule ValidationRule) []ValidationError {
+    var errors []ValidationError
+    
+    // Convert value to string for most validations
+    strValue := fmt.Sprintf("%v", value)
+    
+    // Check if field is required
+    if rule.Required && (value == nil || strValue == "") {
+        errors = append(errors, ValidationError{
+            Field:   fieldName,
+            Message: "field is required",
+            Value:   strValue,
+        })
+        return errors
+    }
+    
+    // Skip validation for empty optional fields
+    if !rule.Required && strValue == "" {
+        return errors
+    }
+    
+    // Length validation
+    if rule.MinLength > 0 && len(strValue) < rule.MinLength {
+        errors = append(errors, ValidationError{
+            Field:   fieldName,
+            Message: fmt.Sprintf("minimum length is %d characters", rule.MinLength),
+            Value:   strValue,
+        })
+    }
+    
+    if rule.MaxLength > 0 && len(strValue) > rule.MaxLength {
+        errors = append(errors, ValidationError{
+            Field:   fieldName,
+            Message: fmt.Sprintf("maximum length is %d characters", rule.MaxLength),
+            Value:   strValue,
+        })
+    }
+    
+    // Pattern validation
+    if rule.Pattern != nil && !rule.Pattern.MatchString(strValue) {
+        errors = append(errors, ValidationError{
+            Field:   fieldName,
+            Message: "field format is invalid",
+            Value:   strValue,
+        })
+    }
+    
+    // Character validation
+    if rule.AllowedChars != "" {
+        allowedRegex := regexp.MustCompile(fmt.Sprintf("^[%s]*$", regexp.QuoteMeta(rule.AllowedChars)))
+        if !allowedRegex.MatchString(strValue) {
+            errors = append(errors, ValidationError{
+                Field:   fieldName,
+                Message: fmt.Sprintf("field contains invalid characters. Allowed: %s", rule.AllowedChars),
+                Value:   strValue,
+            })
+        }
+    }
+    
+    // SQL injection detection
+    if detectSQLInjection(strValue) {
+        errors = append(errors, ValidationError{
+            Field:   fieldName,
+            Message: "field contains potentially dangerous content",
+            Value:   "[REDACTED]",
+        })
+    }
+    
+    // Custom validation
+    if rule.CustomValidator != nil {
+        if err := rule.CustomValidator(value); err != nil {
+            errors = append(errors, ValidationError{
+                Field:   fieldName,
+                Message: err.Error(),
+                Value:   strValue,
+            })
+        }
+    }
+    
+    return errors
+}
+
+// validateRequest validates an entire request against validation configuration
+func (ut *UnifiedTokenizer) validateRequest(endpoint string, data map[string]interface{}) ValidationResult {
+    result := ValidationResult{
+        Valid: true,
+        Data:  make(map[string]interface{}),
+    }
+    
+    // Get validation config for this endpoint
+    config, exists := ut.validationConfigs[endpoint]
+    if !exists {
+        // No specific validation config, apply basic sanitization
+        for key, value := range data {
+            if strValue, ok := value.(string); ok {
+                result.Data[key] = sanitizeString(strValue)
+            } else {
+                result.Data[key] = value
+            }
+        }
+        return result
+    }
+    
+    // Validate each field according to rules
+    for fieldName, rule := range config.Rules {
+        value, exists := data[fieldName]
+        
+        fieldErrors := validateField(fieldName, value, rule)
+        if len(fieldErrors) > 0 {
+            result.Valid = false
+            result.Errors = append(result.Errors, fieldErrors...)
+        }
+        
+        // Sanitize if required and validation passed
+        if rule.Sanitize && exists && len(fieldErrors) == 0 {
+            if strValue, ok := value.(string); ok {
+                result.Data[fieldName] = sanitizeString(strValue)
+            } else {
+                result.Data[fieldName] = value
+            }
+        } else if exists {
+            result.Data[fieldName] = value
+        }
+    }
+    
+    return result
+}
+
 // Audit logging structures
 type AuditEvent struct {
     UserID       string                 `json:"user_id,omitempty"`
@@ -141,6 +330,37 @@ type SecurityEvent struct {
     Details   map[string]interface{} `json:"details,omitempty"`
 }
 
+// Input validation structures
+type ValidationRule struct {
+    FieldName    string                 `json:"field_name"`
+    Required     bool                   `json:"required"`
+    MinLength    int                    `json:"min_length,omitempty"`
+    MaxLength    int                    `json:"max_length,omitempty"`
+    Pattern      *regexp.Regexp         `json:"-"`
+    AllowedChars string                 `json:"allowed_chars,omitempty"`
+    Sanitize     bool                   `json:"sanitize"`
+    CustomValidator func(interface{}) error `json:"-"`
+}
+
+type ValidationConfig struct {
+    MaxRequestSize int64                    `json:"max_request_size"`
+    AllowedMethods []string                 `json:"allowed_methods"`
+    RequiredHeaders []string                `json:"required_headers,omitempty"`
+    Rules          map[string]ValidationRule `json:"rules"`
+}
+
+type ValidationError struct {
+    Field   string `json:"field"`
+    Message string `json:"message"`
+    Value   string `json:"value,omitempty"`
+}
+
+type ValidationResult struct {
+    Valid  bool              `json:"valid"`
+    Errors []ValidationError `json:"errors,omitempty"`
+    Data   map[string]interface{} `json:"data,omitempty"`
+}
+
 type UnifiedTokenizer struct {
     db              *sql.DB
     encryptionKey   *fernet.Key  // Legacy, kept for migration
@@ -159,6 +379,8 @@ type UnifiedTokenizer struct {
     sessionTimeout       time.Duration // Absolute session timeout
     sessionIdleTimeout   time.Duration // Idle session timeout 
     maxConcurrentSessions int           // Maximum concurrent sessions per user
+    // Input validation configuration
+    validationConfigs    map[string]ValidationConfig // Endpoint-specific validation rules
     mu              sync.RWMutex
 }
 
@@ -234,6 +456,160 @@ const (
     RoleOperator = "operator"
     RoleViewer   = "viewer"
 )
+
+// initializeValidationConfigs sets up validation rules for all API endpoints
+func (ut *UnifiedTokenizer) initializeValidationConfigs() {
+    // Login endpoint validation
+    ut.validationConfigs["/api/v1/auth/login"] = ValidationConfig{
+        MaxRequestSize: 1024, // 1KB max
+        AllowedMethods: []string{"POST"},
+        Rules: map[string]ValidationRule{
+            "username": {
+                FieldName:    "username",
+                Required:     true,
+                MinLength:    3,
+                MaxLength:    50,
+                Pattern:      usernameRegex,
+                Sanitize:     true,
+            },
+            "password": {
+                FieldName:    "password",
+                Required:     true,
+                MinLength:    12,
+                MaxLength:    128,
+                Sanitize:     false, // Don't sanitize passwords as it might break them
+            },
+        },
+    }
+    
+    // User creation endpoint validation
+    ut.validationConfigs["/api/v1/users"] = ValidationConfig{
+        MaxRequestSize: 2048, // 2KB max
+        AllowedMethods: []string{"POST"},
+        Rules: map[string]ValidationRule{
+            "username": {
+                FieldName:    "username",
+                Required:     true,
+                MinLength:    3,
+                MaxLength:    50,
+                Pattern:      usernameRegex,
+                Sanitize:     true,
+            },
+            "email": {
+                FieldName:    "email",
+                Required:     true,
+                MinLength:    5,
+                MaxLength:    255,
+                Pattern:      emailRegex,
+                Sanitize:     true,
+            },
+            "password": {
+                FieldName:    "password",
+                Required:     true,
+                MinLength:    12,
+                MaxLength:    128,
+                Sanitize:     false,
+            },
+            "full_name": {
+                FieldName:    "full_name",
+                Required:     false,
+                MinLength:    1,
+                MaxLength:    100,
+                Sanitize:     true,
+            },
+            "role": {
+                FieldName:    "role",
+                Required:     true,
+                Pattern:      regexp.MustCompile(`^(admin|operator|viewer)$`),
+                Sanitize:     true,
+            },
+        },
+    }
+    
+    // Password change endpoint validation
+    ut.validationConfigs["/api/v1/auth/change-password"] = ValidationConfig{
+        MaxRequestSize: 512, // 512 bytes max
+        AllowedMethods: []string{"POST"},
+        Rules: map[string]ValidationRule{
+            "current_password": {
+                FieldName:    "current_password",
+                Required:     true,
+                MinLength:    1,
+                MaxLength:    128,
+                Sanitize:     false,
+            },
+            "new_password": {
+                FieldName:    "new_password",
+                Required:     true,
+                MinLength:    12,
+                MaxLength:    128,
+                Sanitize:     false,
+            },
+        },
+    }
+    
+    // API key creation endpoint validation
+    ut.validationConfigs["/api/v1/api-keys"] = ValidationConfig{
+        MaxRequestSize: 1024, // 1KB max
+        AllowedMethods: []string{"POST"},
+        Rules: map[string]ValidationRule{
+            "client_name": {
+                FieldName:    "client_name",
+                Required:     true,
+                MinLength:    1,
+                MaxLength:    100,
+                Pattern:      regexp.MustCompile(`^[a-zA-Z0-9\s_.-]+$`),
+                Sanitize:     true,
+            },
+        },
+    }
+    
+    // Token search endpoint validation
+    ut.validationConfigs["/api/v1/tokens/search"] = ValidationConfig{
+        MaxRequestSize: 512, // 512 bytes max
+        AllowedMethods: []string{"POST"},
+        Rules: map[string]ValidationRule{
+            "query": {
+                FieldName:    "query",
+                Required:     false,
+                MinLength:    1,
+                MaxLength:    50,
+                Sanitize:     true,
+            },
+            "limit": {
+                FieldName:    "limit",
+                Required:     false,
+                MinLength:    1,
+                MaxLength:    4,
+                Pattern:      regexp.MustCompile(`^[0-9]+$`),
+                CustomValidator: func(value interface{}) error {
+                    if strVal, ok := value.(string); ok {
+                        if intVal, err := strconv.Atoi(strVal); err == nil {
+                            if intVal < 1 || intVal > 1000 {
+                                return fmt.Errorf("limit must be between 1 and 1000")
+                            }
+                        }
+                    }
+                    return nil
+                },
+            },
+        },
+    }
+    
+    // Generic token endpoint validation (for token IDs in URL paths)
+    ut.validationConfigs["token_id"] = ValidationConfig{
+        Rules: map[string]ValidationRule{
+            "token": {
+                FieldName:    "token",
+                Required:     true,
+                MinLength:    10,
+                MaxLength:    100,
+                Pattern:      tokenRegex,
+                Sanitize:     true,
+            },
+        },
+    }
+}
 
 func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     // Database connection
@@ -315,7 +691,11 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
         sessionTimeout:       parseTimeEnv("SESSION_TIMEOUT", "24h"),           // Default 24 hours
         sessionIdleTimeout:   parseTimeEnv("SESSION_IDLE_TIMEOUT", "4h"),       // Default 4 hours
         maxConcurrentSessions: parseIntEnv("MAX_CONCURRENT_SESSIONS", 5),       // Default 5 sessions per user
+        validationConfigs:    make(map[string]ValidationConfig),                // Initialize validation configs
     }
+    
+    // Initialize validation configurations for endpoints
+    ut.initializeValidationConfigs()
     
     // Initialize KeyManager if KEK/DEK is enabled
     if useKEKDEK {
@@ -1974,6 +2354,192 @@ func (ut *UnifiedTokenizer) rateLimitMiddleware(next http.HandlerFunc) http.Hand
     }
 }
 
+// Input validation middleware
+func (ut *UnifiedTokenizer) validationMiddleware(endpoint string) func(http.HandlerFunc) http.HandlerFunc {
+    return func(next http.HandlerFunc) http.HandlerFunc {
+        return func(w http.ResponseWriter, r *http.Request) {
+            // Get client IP for logging
+            clientIP := r.RemoteAddr
+            if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+                clientIP = strings.TrimSpace(strings.Split(forwarded, ",")[0])
+            }
+            if host, _, err := net.SplitHostPort(clientIP); err == nil {
+                clientIP = host
+            }
+            
+            // Check if we have validation config for this endpoint
+            config, hasConfig := ut.validationConfigs[endpoint]
+            
+            // Check request size limit
+            maxSize := int64(10 * 1024 * 1024) // Default 10MB max
+            if hasConfig && config.MaxRequestSize > 0 {
+                maxSize = config.MaxRequestSize
+            }
+            
+            // Limit request body size
+            r.Body = http.MaxBytesReader(w, r.Body, maxSize)
+            
+            // Check allowed methods
+            if hasConfig && len(config.AllowedMethods) > 0 {
+                allowed := false
+                for _, method := range config.AllowedMethods {
+                    if r.Method == method {
+                        allowed = true
+                        break
+                    }
+                }
+                if !allowed {
+                    ut.logSecurityEvent(SecurityEvent{
+                        EventType: "invalid_http_method",
+                        Severity:  "medium",
+                        IPAddress: clientIP,
+                        UserAgent: r.UserAgent(),
+                        Endpoint:  r.URL.Path,
+                        Details: map[string]interface{}{
+                            "method": r.Method,
+                            "allowed_methods": config.AllowedMethods,
+                        },
+                    })
+                    w.WriteHeader(http.StatusMethodNotAllowed)
+                    json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+                    return
+                }
+            }
+            
+            // Check Content-Type for requests with body
+            if r.Method == "POST" || r.Method == "PUT" || r.Method == "PATCH" {
+                contentType := r.Header.Get("Content-Type")
+                if !strings.Contains(contentType, "application/json") {
+                    ut.logSecurityEvent(SecurityEvent{
+                        EventType: "invalid_content_type",
+                        Severity:  "low",
+                        IPAddress: clientIP,
+                        UserAgent: r.UserAgent(),
+                        Endpoint:  r.URL.Path,
+                        Details: map[string]interface{}{
+                            "content_type": contentType,
+                            "expected": "application/json",
+                        },
+                    })
+                    w.WriteHeader(http.StatusUnsupportedMediaType)
+                    json.NewEncoder(w).Encode(map[string]string{"error": "Content-Type must be application/json"})
+                    return
+                }
+                
+                // Parse and validate JSON body
+                if hasConfig && len(config.Rules) > 0 {
+                    var requestData map[string]interface{}
+                    
+                    // Read and parse request body
+                    bodyBytes, err := io.ReadAll(r.Body)
+                    if err != nil {
+                        ut.logSecurityEvent(SecurityEvent{
+                            EventType: "request_body_read_error",
+                            Severity:  "medium",
+                            IPAddress: clientIP,
+                            UserAgent: r.UserAgent(),
+                            Endpoint:  r.URL.Path,
+                            Details: map[string]interface{}{
+                                "error": err.Error(),
+                            },
+                        })
+                        w.WriteHeader(http.StatusBadRequest)
+                        json.NewEncoder(w).Encode(map[string]string{"error": "Failed to read request body"})
+                        return
+                    }
+                    
+                    // Restore body for next handler
+                    r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+                    
+                    // Parse JSON
+                    if len(bodyBytes) > 0 {
+                        if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+                            ut.logSecurityEvent(SecurityEvent{
+                                EventType: "invalid_json",
+                                Severity:  "medium",
+                                IPAddress: clientIP,
+                                UserAgent: r.UserAgent(),
+                                Endpoint:  r.URL.Path,
+                                Details: map[string]interface{}{
+                                    "error": err.Error(),
+                                },
+                            })
+                            w.WriteHeader(http.StatusBadRequest)
+                            json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON format"})
+                            return
+                        }
+                        
+                        // Validate request data
+                        validationResult := ut.validateRequest(endpoint, requestData)
+                        if !validationResult.Valid {
+                            ut.logSecurityEvent(SecurityEvent{
+                                EventType: "validation_failed",
+                                Severity:  "medium",
+                                IPAddress: clientIP,
+                                UserAgent: r.UserAgent(),
+                                Endpoint:  r.URL.Path,
+                                Details: map[string]interface{}{
+                                    "validation_errors": validationResult.Errors,
+                                    "field_count": len(validationResult.Errors),
+                                },
+                            })
+                            w.WriteHeader(http.StatusBadRequest)
+                            json.NewEncoder(w).Encode(map[string]interface{}{
+                                "error": "Validation failed",
+                                "validation_errors": validationResult.Errors,
+                            })
+                            return
+                        }
+                        
+                        // Store sanitized data in request context for handler use
+                        validatedDataBytes, _ := json.Marshal(validationResult.Data)
+                        r.Body = io.NopCloser(bytes.NewBuffer(validatedDataBytes))
+                    }
+                }
+            }
+            
+            // Validate URL parameters for token endpoints
+            if strings.Contains(r.URL.Path, "/tokens/") && !strings.HasSuffix(r.URL.Path, "/tokens") {
+                pathParts := strings.Split(r.URL.Path, "/")
+                for i, part := range pathParts {
+                    if part == "tokens" && i+1 < len(pathParts) {
+                        tokenID := pathParts[i+1]
+                        if tokenID != "search" { // Skip search endpoint
+                            tokenData := map[string]interface{}{"token": tokenID}
+                            if _, exists := ut.validationConfigs["token_id"]; exists {
+                                validationResult := ut.validateRequest("token_id", tokenData)
+                                if !validationResult.Valid {
+                                    ut.logSecurityEvent(SecurityEvent{
+                                        EventType: "invalid_token_format",
+                                        Severity:  "medium",
+                                        IPAddress: clientIP,
+                                        UserAgent: r.UserAgent(),
+                                        Endpoint:  r.URL.Path,
+                                        Details: map[string]interface{}{
+                                            "token_id": tokenID,
+                                            "validation_errors": validationResult.Errors,
+                                        },
+                                    })
+                                    w.WriteHeader(http.StatusBadRequest)
+                                    json.NewEncoder(w).Encode(map[string]interface{}{
+                                        "error": "Invalid token format",
+                                        "validation_errors": validationResult.Errors,
+                                    })
+                                    return
+                                }
+                            }
+                        }
+                        break
+                    }
+                }
+            }
+            
+            // Continue to next handler
+            next(w, r)
+        }
+    }
+}
+
 // Audit logging methods
 func (ut *UnifiedTokenizer) logAuditEvent(event AuditEvent) {
     detailsJSON, _ := json.Marshal(event.Details)
@@ -2668,19 +3234,19 @@ func (ut *UnifiedTokenizer) startAPIServer() {
     mux.HandleFunc("/health", ut.handleAPIHealth)
     mux.HandleFunc("/api/v1/version", ut.handleGetVersion)
     
-    // Authentication endpoints (no auth required, but rate limited)
-    mux.HandleFunc("/api/v1/auth/login", ut.rateLimitMiddleware(ut.handleLogin))
+    // Authentication endpoints (no auth required, but rate limited and validated)
+    mux.HandleFunc("/api/v1/auth/login", ut.rateLimitMiddleware(ut.validationMiddleware("/api/v1/auth/login")(ut.handleLogin)))
     mux.HandleFunc("/api/v1/auth/logout", ut.handleLogout)
     mux.HandleFunc("/api/v1/auth/me", ut.handleGetCurrentUser)
-    mux.HandleFunc("/api/v1/auth/change-password", ut.rateLimitMiddleware(ut.handleChangePassword))
+    mux.HandleFunc("/api/v1/auth/change-password", ut.rateLimitMiddleware(ut.validationMiddleware("/api/v1/auth/change-password")(ut.handleChangePassword)))
     
-    // API Key management (requires permissions)
+    // API Key management (requires permissions and validation)
     mux.HandleFunc("/api/v1/api-keys", func(w http.ResponseWriter, r *http.Request) {
         switch r.Method {
         case "GET":
             ut.requirePermission(ut.handleListAPIKeys, PermAPIKeysRead)(w, r)
         case "POST":
-            ut.requirePermission(ut.handleCreateAPIKey, PermAPIKeysWrite)(w, r)
+            ut.validationMiddleware("/api/v1/api-keys")(ut.requirePermission(ut.handleCreateAPIKey, PermAPIKeysWrite))(w, r)
         default:
             w.WriteHeader(http.StatusMethodNotAllowed)
         }
@@ -2707,7 +3273,7 @@ func (ut *UnifiedTokenizer) startAPIServer() {
     
     mux.HandleFunc("/api/v1/tokens/search", func(w http.ResponseWriter, r *http.Request) {
         if r.Method == "POST" {
-            ut.requirePermission(ut.handleSearchTokens, PermTokensRead)(w, r)
+            ut.validationMiddleware("/api/v1/tokens/search")(ut.requirePermission(ut.handleSearchTokens, PermTokensRead))(w, r)
         } else {
             w.WriteHeader(http.StatusMethodNotAllowed)
         }
@@ -2737,13 +3303,13 @@ func (ut *UnifiedTokenizer) startAPIServer() {
     // Stats
     mux.HandleFunc("/api/v1/stats", ut.requirePermission(ut.handleAPIStats, PermStatsRead))
     
-    // User management endpoints
+    // User management endpoints (with validation)
     mux.HandleFunc("/api/v1/users", func(w http.ResponseWriter, r *http.Request) {
         switch r.Method {
         case "GET":
             ut.requirePermission(ut.handleListUsers, PermUsersRead)(w, r)
         case "POST":
-            ut.requirePermission(ut.handleCreateUser, PermUsersWrite)(w, r)
+            ut.validationMiddleware("/api/v1/users")(ut.requirePermission(ut.handleCreateUser, PermUsersWrite))(w, r)
         default:
             w.WriteHeader(http.StatusMethodNotAllowed)
         }
