@@ -1059,7 +1059,25 @@ func (ut *UnifiedTokenizer) RetrieveCard(token string) string {
 
 // ICAP Handler interface implementation - delegate to tokenizer package
 func (ut *UnifiedTokenizer) TokenizeJSON(jsonStr string) (string, bool, error) {
-    return ut.tokenizer.TokenizeJSON(jsonStr)
+    return ut.tokenizeJSON(jsonStr)
+}
+
+// Original working tokenizeJSON implementation
+func (ut *UnifiedTokenizer) tokenizeJSON(jsonStr string) (string, bool, error) {
+    var data interface{}
+    if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+        return jsonStr, false, err
+    }
+    
+    modified := false
+    ut.processValue(&data, &modified, true) // true for tokenization
+    
+    result, err := json.Marshal(data)
+    if err != nil {
+        return jsonStr, false, err
+    }
+    
+    return string(result), modified, nil
 }
 
 func (ut *UnifiedTokenizer) DetokenizeJSON(jsonStr string) (string, bool, error) {

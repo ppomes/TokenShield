@@ -219,68 +219,101 @@ func (s *Server) handleICAPRespmod(reader *bufio.Reader, writer *bufio.Writer, i
 	}
 	
 	// Parse the response (request + response)
-	_, _, body, err := s.parseEncapsulated(reader, encapHeader)
+	httpRequest, httpHeaders, body, err := s.parseEncapsulated(reader, encapHeader)
 	if err != nil {
 		log.Printf("RESPMOD Error parsing encapsulated response data: %v", err)
 		return
 	}
 	
 	if s.debug {
-		log.Printf("RESPMOD Body length: %d", len(body))
-		if len(body) > 0 && len(body) < 1000 {
-			log.Printf("RESPMOD Body content: %s", string(body))
-		}
+		log.Printf("Response HTTP Request: %s", httpRequest)
+		log.Printf("Response body length: %d", len(body))
 	}
 	
-	// Check if we need to modify the body
+	// Check if we need to tokenize the response
 	modified := false
 	modifiedBody := body
 	
+	// Handle null-body case - send 204 No Content
+	if len(body) == 0 {
+		if s.debug {
+			log.Printf("RESPMOD: No body to process, sending 204 No Content")
+		}
+		response := "ICAP/1.0 204 No Content\r\n"
+		response += "ISTag: \"TS-001\"\r\n"
+		response += "\r\n"
+		writer.WriteString(response)
+		writer.Flush()
+		return
+	}
+	
+	// Look for JSON responses that might contain card data
 	if len(body) > 0 {
-		bodyStr := string(body)
+		contentType := ""
+		for _, header := range httpHeaders {
+			if strings.HasPrefix(strings.ToLower(header), "content-type:") {
+				contentType = strings.ToLower(header)
+				break
+			}
+		}
 		
-		// Try JSON tokenization first (for card import responses)
-		if tokenized, wasModified, err := s.handler.TokenizeJSON(bodyStr); err == nil && wasModified {
-			modifiedBody = []byte(tokenized)
-			modified = true
+		if strings.Contains(contentType, "application/json") {
 			if s.debug {
-				log.Printf("RESPMOD: Tokenized JSON response")
+				log.Printf("RESPMOD: Found JSON response, checking for cards to tokenize")
+			}
+			
+			tokenizedJSON, wasModified, err := s.handler.TokenizeJSON(string(body))
+			if err != nil {
+				log.Printf("Error tokenizing JSON response: %v", err)
+			} else if wasModified {
+				modifiedBody = []byte(tokenizedJSON)
+				modified = true
+				log.Printf("RESPMOD: Tokenized card numbers in response")
 			}
 		}
 	}
 	
+	// Send response
 	if !modified {
-		// Send 204 No Content - no modification needed
-		response := "ICAP/1.0 204 No Content\r\n\r\n"
+		// No modification - send 204 No Content
+		response := "ICAP/1.0 204 No Content\r\n"
+		response += "ISTag: \"TS-001\"\r\n"
+		response += "\r\n"
 		writer.WriteString(response)
-		if s.debug {
-			log.Printf("RESPMOD: No modifications needed, sending 204")
+	} else {
+		// Modified - send 200 OK with new body
+		
+		// Build HTTP response first to calculate exact positions
+		// Include HTTP status line + headers
+		httpHeadersStr := httpRequest + "\r\n" // HTTP status line
+		for _, header := range httpHeaders {
+			if strings.HasPrefix(strings.ToLower(header), "content-length:") {
+				// Update content length for modified body
+				httpHeadersStr += fmt.Sprintf("Content-Length: %d\r\n", len(modifiedBody))
+			} else {
+				httpHeadersStr += header + "\r\n"
+			}
 		}
-		return
+		httpHeadersStr += "\r\n" // End of headers
+		
+		// Calculate exact byte positions for Encapsulated header
+		resBodyOffset := len(httpHeadersStr)
+		
+		// Build ICAP response
+		response := "ICAP/1.0 200 OK\r\n"
+		response += "ISTag: \"TS-001\"\r\n"
+		response += fmt.Sprintf("Encapsulated: res-hdr=0, res-body=%d\r\n", resBodyOffset)
+		response += "\r\n"
+		
+		// Write ICAP headers
+		writer.WriteString(response)
+		
+		// Write HTTP response headers
+		writer.WriteString(httpHeadersStr)
+		
+		// Write modified body in chunks
+		s.writeChunked(writer, modifiedBody)
 	}
-	
-	if s.debug {
-		log.Printf("RESPMOD: Sending modified response, original size: %d, modified size: %d", len(body), len(modifiedBody))
-	}
-	
-	// Build ICAP response
-	response := "ICAP/1.0 200 OK\r\n"
-	response += "Encapsulated: res-hdr=0, res-body=\r\n"
-	response += "\r\n"
-	
-	// Write ICAP headers
-	writer.WriteString(response)
-	
-	// Write HTTP response line
-	writer.WriteString("HTTP/1.1 200 OK\r\n")
-	
-	// Write response headers with updated Content-Length
-	writer.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(modifiedBody)))
-	writer.WriteString("Content-Type: application/json\r\n")
-	writer.WriteString("\r\n")
-	
-	// Write body using chunked encoding
-	s.writeChunked(writer, modifiedBody)
 	
 	writer.Flush()
 }
