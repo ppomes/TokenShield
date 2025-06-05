@@ -27,6 +27,8 @@ import (
     "github.com/fernet/fernet-go"
     _ "github.com/go-sql-driver/mysql"
     "golang.org/x/crypto/bcrypt"
+    
+    "tokenshield-unified/internal/utils"
 )
 
 // Rate limiting structures
@@ -148,7 +150,7 @@ var (
 )
 
 // sanitizeString removes dangerous characters and escapes HTML
-func sanitizeString(input string) string {
+func SanitizeString(input string) string {
     // Remove null bytes and control characters
     cleaned := strings.Map(func(r rune) rune {
         if r == 0 || (r < 32 && r != 9 && r != 10 && r != 13) {
@@ -169,7 +171,7 @@ func sanitizeString(input string) string {
 }
 
 // detectSQLInjection checks for SQL injection patterns
-func detectSQLInjection(input string) bool {
+func DetectSQLInjection(input string) bool {
     lowercaseInput := strings.ToLower(input)
     for _, pattern := range sqlInjectionPatterns {
         if pattern.MatchString(lowercaseInput) {
@@ -240,7 +242,7 @@ func validateField(fieldName string, value interface{}, rule ValidationRule) []V
     }
     
     // SQL injection detection
-    if detectSQLInjection(strValue) {
+    if utils.DetectSQLInjection(strValue) {
         errors = append(errors, ValidationError{
             Field:   fieldName,
             Message: "field contains potentially dangerous content",
@@ -275,7 +277,7 @@ func (ut *UnifiedTokenizer) validateRequest(endpoint string, data map[string]int
         // No specific validation config, apply basic sanitization
         for key, value := range data {
             if strValue, ok := value.(string); ok {
-                result.Data[key] = sanitizeString(strValue)
+                result.Data[key] = utils.SanitizeString(strValue)
             } else {
                 result.Data[key] = value
             }
@@ -296,7 +298,7 @@ func (ut *UnifiedTokenizer) validateRequest(endpoint string, data map[string]int
         // Sanitize if required and validation passed
         if rule.Sanitize && exists && len(fieldErrors) == 0 {
             if strValue, ok := value.(string); ok {
-                result.Data[fieldName] = sanitizeString(strValue)
+                result.Data[fieldName] = utils.SanitizeString(strValue)
             } else {
                 result.Data[fieldName] = value
             }
@@ -696,11 +698,11 @@ func (ut *UnifiedTokenizer) initializeValidationConfigs() {
 
 func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     // Database connection
-    dbHost := getEnv("DB_HOST", "mysql")
-    dbPort := getEnv("DB_PORT", "3306")
-    dbUser := getEnv("DB_USER", "pciproxy")
-    dbPassword := getEnv("DB_PASSWORD", "pciproxy123")
-    dbName := getEnv("DB_NAME", "tokenshield")
+    dbHost := utils.GetEnv("DB_HOST", "mysql")
+    dbPort := utils.GetEnv("DB_PORT", "3306")
+    dbUser := utils.GetEnv("DB_USER", "pciproxy")
+    dbPassword := utils.GetEnv("DB_PASSWORD", "pciproxy123")
+    dbName := utils.GetEnv("DB_NAME", "tokenshield")
     
     dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", dbUser, dbPassword, dbHost, dbPort, dbName)
     db, err := sql.Open("mysql", dsn)
@@ -719,7 +721,7 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     db.SetConnMaxLifetime(5 * time.Minute)
     
     // Encryption key
-    encKeyStr := getEnv("ENCRYPTION_KEY", "")
+    encKeyStr := utils.GetEnv("ENCRYPTION_KEY", "")
     if encKeyStr == "" {
         // Generate a key for development
         key := fernet.Key{} 
@@ -740,7 +742,7 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     encKey := new(fernet.Key)
     copy(encKey[:], keyBytes)
     
-    tokenFormat := getEnv("TOKEN_FORMAT", "prefix")
+    tokenFormat := utils.GetEnv("TOKEN_FORMAT", "prefix")
     if tokenFormat != "prefix" && tokenFormat != "luhn" {
         tokenFormat = "prefix"
     }
@@ -755,25 +757,25 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     }
     
     // Check if KEK/DEK is enabled
-    useKEKDEK := getEnv("USE_KEK_DEK", "false") == "true"
+    useKEKDEK := utils.GetEnv("USE_KEK_DEK", "false") == "true"
     
     ut := &UnifiedTokenizer{
         db:            db,
         encryptionKey: encKey,
-        appEndpoint:   getEnv("APP_ENDPOINT", "http://dummy-app:8000"),
+        appEndpoint:   utils.GetEnv("APP_ENDPOINT", "http://dummy-app:8000"),
         tokenRegex:    tokenRegex,
         cardRegex:     regexp.MustCompile(`\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|6(?:011|5[0-9]{2})[0-9]{12}|(?:2131|1800|35\d{3})\d{11})\b`),
-        httpPort:      getEnv("HTTP_PORT", "8080"),
-        icapPort:      getEnv("ICAP_PORT", "1344"),
-        apiPort:       getEnv("API_PORT", "8090"),
-        debug:         getEnv("DEBUG_MODE", "0") == "1",
+        httpPort:      utils.GetEnv("HTTP_PORT", "8080"),
+        icapPort:      utils.GetEnv("ICAP_PORT", "1344"),
+        apiPort:       utils.GetEnv("API_PORT", "8090"),
+        debug:         utils.GetEnv("DEBUG_MODE", "0") == "1",
         tokenFormat:   tokenFormat,
         useKEKDEK:     useKEKDEK,
         authRateLimiter: NewRateLimiter(5, 15*time.Minute, 15*time.Minute), // 5 attempts per 15 minutes, 15 minute block
         // Session security configuration with environment variable support
-        sessionTimeout:       parseTimeEnv("SESSION_TIMEOUT", "24h"),           // Default 24 hours
-        sessionIdleTimeout:   parseTimeEnv("SESSION_IDLE_TIMEOUT", "4h"),       // Default 4 hours
-        maxConcurrentSessions: parseIntEnv("MAX_CONCURRENT_SESSIONS", 5),       // Default 5 sessions per user
+        sessionTimeout:       utils.ParseTimeEnv("SESSION_TIMEOUT", "24h"),           // Default 24 hours
+        sessionIdleTimeout:   utils.ParseTimeEnv("SESSION_IDLE_TIMEOUT", "4h"),       // Default 4 hours
+        maxConcurrentSessions: utils.ParseIntEnv("MAX_CONCURRENT_SESSIONS", 5),       // Default 5 sessions per user
         validationConfigs:    make(map[string]ValidationConfig),                // Initialize validation configs
     }
     
@@ -810,8 +812,8 @@ func getEnv(key, defaultValue string) string {
     return defaultValue
 }
 
-func parseTimeEnv(key, defaultValue string) time.Duration {
-    value := getEnv(key, defaultValue)
+func ParseTimeEnv(key, defaultValue string) time.Duration {
+    value := utils.GetEnv(key, defaultValue)
     duration, err := time.ParseDuration(value)
     if err != nil {
         log.Printf("Warning: Invalid duration for %s: %s, using default: %s", key, value, defaultValue)
@@ -820,8 +822,8 @@ func parseTimeEnv(key, defaultValue string) time.Duration {
     return duration
 }
 
-func parseIntEnv(key string, defaultValue int) int {
-    value := getEnv(key, fmt.Sprintf("%d", defaultValue))
+func ParseIntEnv(key string, defaultValue int) int {
+    value := utils.GetEnv(key, fmt.Sprintf("%d", defaultValue))
     result, err := strconv.Atoi(value)
     if err != nil {
         log.Printf("Warning: Invalid integer for %s: %s, using default: %d", key, value, defaultValue)
@@ -830,7 +832,7 @@ func parseIntEnv(key string, defaultValue int) int {
     return result
 }
 
-func min(a, b int) int {
+func Min(a, b int) int {
     if a < b {
         return a
     }
@@ -936,7 +938,7 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
         respContentType := resp.Header.Get("Content-Type")
         if ut.debug {
             log.Printf("DEBUG: Response content type: %s", respContentType)
-            log.Printf("DEBUG: Response body preview: %s", string(respBody[:min(200, len(respBody))]))
+            log.Printf("DEBUG: Response body preview: %s", string(respBody[:utils.Min(200, len(respBody))]))
         }
         
         // Handle JSON responses (API)
@@ -1495,7 +1497,7 @@ func (ut *UnifiedTokenizer) tokenizeJSON(jsonStr string) (string, bool, error) {
 // Detokenization logic
 func (ut *UnifiedTokenizer) detokenizeJSON(jsonStr string) (string, bool, error) {
     if ut.debug {
-        log.Printf("DEBUG: detokenizeJSON called with: %s", jsonStr[:min(200, len(jsonStr))])
+        log.Printf("DEBUG: detokenizeJSON called with: %s", jsonStr[:utils.Min(200, len(jsonStr))])
     }
     
     var data interface{}
@@ -1710,7 +1712,7 @@ func (ut *UnifiedTokenizer) generateLuhnToken() string {
 }
 
 // Detect card type based on card number
-func detectCardType(cardNumber string) string {
+func DetectCardType(cardNumber string) string {
     if len(cardNumber) < 4 {
         return "Unknown"
     }
@@ -1771,7 +1773,7 @@ func detectCardType(cardNumber string) string {
 }
 
 // isValidLuhn validates a card number using the Luhn algorithm
-func isValidLuhn(cardNumber string) bool {
+func IsValidLuhn(cardNumber string) bool {
     // Remove spaces and dashes
     cardNumber = strings.ReplaceAll(strings.ReplaceAll(cardNumber, " ", ""), "-", "")
     
@@ -1840,7 +1842,7 @@ func (ut *UnifiedTokenizer) storeCard(token, cardNumber string) error {
     var err error
     
     // Detect card type
-    cardType := detectCardType(cardNumber)
+    cardType := utils.DetectCardType(cardNumber)
     
     if ut.useKEKDEK && ut.keyManager != nil {
         // Use KEK/DEK encryption
@@ -2463,7 +2465,7 @@ func (ut *UnifiedTokenizer) corsMiddleware(next http.Handler) http.Handler {
 func (ut *UnifiedTokenizer) rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         // Skip rate limiting in test mode
-        if testMode := getEnv("TEST_MODE", "false"); testMode == "true" {
+        if testMode := utils.GetEnv("TEST_MODE", "false"); testMode == "true" {
             next(w, r)
             return
         }
@@ -3636,7 +3638,7 @@ func (ut *UnifiedTokenizer) validateCardRecord(card CardImportRecord) error {
     }
     
     // Validate using Luhn algorithm
-    if !isValidLuhn(cleanCard) {
+    if !utils.IsValidLuhn(cleanCard) {
         return fmt.Errorf("card number fails Luhn algorithm validation")
     }
     
@@ -3721,7 +3723,7 @@ func (ut *UnifiedTokenizer) tokenizeCardForImport(card CardImportRecord, tx *sql
     token := ut.generateToken()
     
     // Detect card type
-    cardType := detectCardType(cleanCard)
+    cardType := utils.DetectCardType(cleanCard)
     
     // Encrypt card number
     encryptedCard, err := ut.encryptCardNumber(cleanCard)

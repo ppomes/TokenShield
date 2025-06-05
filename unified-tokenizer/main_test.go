@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+	
+	"tokenshield-unified/internal/utils"
 )
 
 // TestConfig holds test configuration
@@ -183,7 +185,7 @@ func TestCardTypeDetection(t *testing.T) {
 	
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
-			if got := detectCardType(tt.cardNumber); got != tt.want {
+			if got := utils.DetectCardType(tt.cardNumber); got != tt.want {
 				t.Errorf("detectCardType(%q) = %v, want %v", tt.cardNumber, got, tt.want)
 			}
 		})
