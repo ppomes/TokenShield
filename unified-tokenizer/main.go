@@ -1063,7 +1063,195 @@ func (ut *UnifiedTokenizer) TokenizeJSON(jsonStr string) (string, bool, error) {
 }
 
 func (ut *UnifiedTokenizer) DetokenizeJSON(jsonStr string) (string, bool, error) {
-    return ut.tokenizer.DetokenizeJSON(jsonStr)
+    return ut.detokenizeJSON(jsonStr)
+}
+
+// Original working detokenizeJSON implementation
+func (ut *UnifiedTokenizer) detokenizeJSON(jsonStr string) (string, bool, error) {
+    if ut.debug {
+        log.Printf("DEBUG: detokenizeJSON called with: %s", jsonStr[:min(200, len(jsonStr))])
+    }
+    
+    var data interface{}
+    if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+        return jsonStr, false, err
+    }
+    
+    if ut.debug {
+        log.Printf("DEBUG: Unmarshaled data type: %T", data)
+    }
+    
+    modified := false
+    ut.processValue(&data, &modified, false) // false for detokenization
+    
+    if ut.debug {
+        log.Printf("DEBUG: detokenizeJSON modified=%v", modified)
+    }
+    
+    result, err := json.Marshal(data)
+    if err != nil {
+        return jsonStr, false, err
+    }
+    
+    return string(result), modified, nil
+}
+
+// Original working processValue implementation
+func (ut *UnifiedTokenizer) processValue(v interface{}, modified *bool, tokenize bool) {
+    switch val := v.(type) {
+    case *interface{}:
+        if ut.debug && !tokenize {
+            log.Printf("DEBUG: Processing pointer to interface{}")
+        }
+        ut.processValue(*val, modified, tokenize)
+    case map[string]interface{}:
+        if ut.debug && !tokenize {
+            log.Printf("DEBUG: Processing map with keys: %v", ut.getMapKeys(val))
+        }
+        for k, v := range val {
+            if ut.debug && !tokenize {
+                log.Printf("DEBUG: Processing map key '%s' with value type %T", k, v)
+            }
+            if tokenize && ut.isCreditCardField(k) {
+                if str, ok := v.(string); ok && ut.cardRegex.MatchString(str) {
+                    // Don't tokenize if it's already one of our tokens
+                    if ut.tokenFormat == "luhn" && strings.HasPrefix(str, "9999") {
+                        // This is already a token, skip it
+                        continue
+                    }
+                    token := ut.generateToken()
+                    if err := ut.storeCard(token, str); err == nil {
+                        val[k] = token
+                        *modified = true
+                        log.Printf("Tokenized card ending in %s", str[len(str)-4:])
+                    }
+                }
+            } else if !tokenize && ut.isCreditCardField(k) {
+                if str, ok := v.(string); ok {
+                    if ut.debug {
+                        log.Printf("DEBUG: Checking field '%s' with value '%s' for detokenization", k, str)
+                    }
+                    if ut.tokenRegex.MatchString(str) {
+                        if card := ut.retrieveCard(str); card != "" {
+                            val[k] = card
+                            *modified = true
+                            log.Printf("Detokenized token %s in field %s", str, k)
+                        } else if ut.debug {
+                            log.Printf("DEBUG: Failed to retrieve card for token %s", str)
+                        }
+                    } else if ut.debug {
+                        log.Printf("DEBUG: Value '%s' doesn't match token regex", str)
+                    }
+                }
+            } else {
+                if ut.debug && !tokenize {
+                    log.Printf("DEBUG: Recursively processing non-card field '%s' with value type %T", k, v)
+                }
+                ut.processValue(v, modified, tokenize)
+            }
+        }
+    case []interface{}:
+        if ut.debug && !tokenize {
+            log.Printf("DEBUG: Processing array with %d elements", len(val))
+        }
+        for i := range val {
+            if ut.debug && !tokenize && i == 0 {
+                log.Printf("DEBUG: First array element type: %T", val[i])
+            }
+            ut.processValue(&val[i], modified, tokenize)
+        }
+    case string:
+        // Handle string values that might contain tokens or card numbers
+        if tokenize && ut.cardRegex.MatchString(val) {
+            // This case is handled by the parent map processor
+        } else if !tokenize && ut.tokenRegex.MatchString(val) {
+            // This case is handled by the parent map processor  
+        }
+    }
+}
+
+func (ut *UnifiedTokenizer) getMapKeys(m map[string]interface{}) []string {
+    keys := make([]string, 0, len(m))
+    for k := range m {
+        keys = append(keys, k)
+    }
+    return keys
+}
+
+// Original helper methods
+func (ut *UnifiedTokenizer) isCreditCardField(fieldName string) bool {
+    lowerField := strings.ToLower(fieldName)
+    // Exact matches to avoid false positives like "cards" matching "card"
+    exactMatches := []string{"card", "pan"}
+    for _, field := range exactMatches {
+        if lowerField == field {
+            return true
+        }
+    }
+    
+    // Partial matches for compound names
+    cardFields := []string{"card_number", "cardnumber", "creditcard", "credit_card", "account_number"}
+    for _, field := range cardFields {
+        if strings.Contains(lowerField, field) {
+            return true
+        }
+    }
+    return false
+}
+
+func (ut *UnifiedTokenizer) generateToken() string {
+    if ut.tokenFormat == "luhn" {
+        return ut.generateLuhnToken()
+    }
+    
+    // Default prefix format
+    b := make([]byte, 32)
+    cryptorand.Read(b)
+    return "tok_" + base64.URLEncoding.EncodeToString(b)
+}
+
+// generateLuhnToken generates a token that looks like a valid credit card number
+func (ut *UnifiedTokenizer) generateLuhnToken() string {
+    // Use prefix 9999 to distinguish tokens from real cards
+    // This prefix is not used by any real card issuer
+    prefix := "9999"
+    
+    // Generate 11 random digits
+    randomPart := make([]byte, 11)
+    for i := 0; i < 11; i++ {
+        randomPart[i] = byte(rand.Intn(10)) + '0'
+    }
+    
+    // Combine prefix and random part (15 digits total)
+    partial := prefix + string(randomPart)
+    
+    // Calculate and append Luhn check digit
+    checkDigit := ut.calculateLuhnCheckDigit(partial)
+    
+    return partial + strconv.Itoa(checkDigit)
+}
+
+// calculateLuhnCheckDigit calculates the Luhn check digit for a given number
+func (ut *UnifiedTokenizer) calculateLuhnCheckDigit(number string) int {
+    sum := 0
+    alternate := false
+    
+    // Process from right to left
+    for i := len(number) - 1; i >= 0; i-- {
+        digit := int(number[i] - '0')
+        
+        if alternate {
+            digit *= 2
+            if digit > 9 {
+                digit = (digit % 10) + 1
+            }
+        }
+        
+        sum += digit
+        alternate = !alternate
+    }
+    
+    return (10 - (sum % 10)) % 10
 }
 
 func (ut *UnifiedTokenizer) DetokenizeHTML(htmlStr string) (string, bool, error) {
