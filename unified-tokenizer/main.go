@@ -2462,6 +2462,12 @@ func (ut *UnifiedTokenizer) corsMiddleware(next http.Handler) http.Handler {
 // Rate limiting middleware for authentication endpoints
 func (ut *UnifiedTokenizer) rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
+        // Skip rate limiting in test mode
+        if testMode := getEnv("TEST_MODE", "false"); testMode == "true" {
+            next(w, r)
+            return
+        }
+        
         // Get client IP
         clientIP := r.RemoteAddr
         if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {

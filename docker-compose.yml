@@ -39,6 +39,7 @@ services:
       DEBUG_MODE: "1"
       TOKEN_FORMAT: ${TOKEN_FORMAT:-prefix}  # "prefix" for tok_ format, "luhn" for Luhn-valid format
       USE_KEK_DEK: ${USE_KEK_DEK:-true}      # "true" to enable KEK/DEK encryption
+      TEST_MODE: ${TEST_MODE:-false}         # Set to true to disable rate limiting for testing
     depends_on:
       mysql:
         condition: service_healthy
