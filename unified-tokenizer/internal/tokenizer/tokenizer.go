@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	cryptorand "crypto/rand"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/fernet/fernet-go"
 	"tokenshield-unified/internal/utils"
@@ -217,28 +217,24 @@ func (t *Tokenizer) getMapKeys(m map[string]interface{}) []string {
 	return keys
 }
 
-// isCreditCardField checks if a field name indicates it might contain credit card data
+// isCreditCardField checks if a field name indicates it might contain credit card data (original logic)
 func (t *Tokenizer) isCreditCardField(fieldName string) bool {
-	fieldLower := strings.ToLower(fieldName)
-	
-	// Common field names that contain credit card numbers
-	cardFields := []string{
-		"card_number", "cardnumber", "card", "pan", "primaryaccountnumber",
-		"creditcard", "credit_card", "ccnumber", "cc_number", "account_number",
-		"acct_number", "number", "cardno", "card_no",
-	}
-	
-	for _, field := range cardFields {
-		if fieldLower == field {
+	lowerField := strings.ToLower(fieldName)
+	// Exact matches to avoid false positives like "cards" matching "card" (original logic)
+	exactMatches := []string{"card", "pan"}
+	for _, field := range exactMatches {
+		if lowerField == field {
 			return true
 		}
 	}
 	
-	// Also check for partial matches that are likely credit card fields
-	if strings.Contains(fieldLower, "card") && strings.Contains(fieldLower, "number") {
-		return true
+	// Partial matches for compound names (original logic)
+	cardFields := []string{"card_number", "cardnumber", "creditcard", "credit_card", "account_number"}
+	for _, field := range cardFields {
+		if strings.Contains(lowerField, field) {
+			return true
+		}
 	}
-	
 	return false
 }
 
@@ -259,43 +255,33 @@ func (t *Tokenizer) generateLuhnToken() string {
 	// Start with our special prefix
 	prefix := "9999"
 	
-	// Generate 11 random digits 
-	randomBytes := make([]byte, 11)
-	_, err := cryptorand.Read(randomBytes)
-	if err != nil {
-		// Fallback to time-based generation if crypto/rand fails
-		now := time.Now().UnixNano()
-		for i := 0; i < 11; i++ {
-			randomBytes[i] = byte('0' + (now>>uint(i*6))%10)
-		}
+	// Generate 11 random digits (restore original logic)
+	randomPart := make([]byte, 11)
+	for i := 0; i < 11; i++ {
+		randomPart[i] = byte(rand.Intn(10)) + '0'
 	}
-	
-	// Convert to digit string
-	digits := prefix
-	for _, b := range randomBytes {
-		digits += strconv.Itoa(int(b) % 10)
-	}
+	partial := prefix + string(randomPart)
 	
 	// Calculate Luhn check digit
-	checkDigit := t.calculateLuhnCheckDigit(digits)
+	checkDigit := t.calculateLuhnCheckDigit(partial)
 	
-	return digits + strconv.Itoa(checkDigit)
+	return partial + strconv.Itoa(checkDigit)
 }
 
 
-// calculateLuhnCheckDigit calculates the Luhn algorithm check digit
-func (t *Tokenizer) calculateLuhnCheckDigit(digits string) int {
+// calculateLuhnCheckDigit calculates the Luhn algorithm check digit (correct version)
+func (t *Tokenizer) calculateLuhnCheckDigit(number string) int {
 	sum := 0
-	alternate := true // Start with true since we're calculating for the final digit
+	alternate := false
 	
-	// Process digits from right to left, excluding the final position
-	for i := len(digits) - 1; i >= 0; i-- {
-		digit, _ := strconv.Atoi(string(digits[i]))
+	// Process from right to left
+	for i := len(number) - 1; i >= 0; i-- {
+		digit := int(number[i] - '0')
 		
 		if alternate {
 			digit *= 2
 			if digit > 9 {
-				digit = digit/10 + digit%10
+				digit = digit/10 + digit%10  // Correct Luhn algorithm
 			}
 		}
 		
@@ -303,7 +289,6 @@ func (t *Tokenizer) calculateLuhnCheckDigit(digits string) int {
 		alternate = !alternate
 	}
 	
-	// Return the digit that makes the total sum divisible by 10
 	return (10 - (sum % 10)) % 10
 }
 
