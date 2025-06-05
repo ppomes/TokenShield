@@ -1,8 +1,8 @@
 {
-    "timestamp": "2025-06-05T11:21:22-04:00",
-    "total_tests": 11,
-    "passed": 11,
-    "failed": 0,
-    "success": true,
-    "system_ready_for_refactoring": true
+    "timestamp": "2025-06-05T14:44:35-04:00",
+    "total_tests": 8,
+    "passed": 5,
+    "failed": 3,
+    "success": false,
+    "system_ready_for_refactoring": false
 }
