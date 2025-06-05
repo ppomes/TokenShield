@@ -239,19 +239,12 @@ func (s *Server) handleICAPRespmod(reader *bufio.Reader, writer *bufio.Writer, i
 	if len(body) > 0 {
 		bodyStr := string(body)
 		
-		// Try JSON detokenization first
-		if detokenized, wasModified, err := s.handler.DetokenizeJSON(bodyStr); err == nil && wasModified {
-			modifiedBody = []byte(detokenized)
+		// Try JSON tokenization first (for card import responses)
+		if tokenized, wasModified, err := s.handler.TokenizeJSON(bodyStr); err == nil && wasModified {
+			modifiedBody = []byte(tokenized)
 			modified = true
 			if s.debug {
-				log.Printf("RESPMOD: Detokenized JSON response")
-			}
-		} else if detokenized, wasModified, err := s.handler.DetokenizeHTML(bodyStr); err == nil && wasModified {
-			// Try HTML detokenization if JSON failed
-			modifiedBody = []byte(detokenized)
-			modified = true
-			if s.debug {
-				log.Printf("RESPMOD: Detokenized HTML response")
+				log.Printf("RESPMOD: Tokenized JSON response")
 			}
 		}
 	}
