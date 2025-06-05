@@ -29,98 +29,10 @@ import (
     "golang.org/x/crypto/bcrypt"
     
     "tokenshield-unified/internal/utils"
+    "tokenshield-unified/internal/ratelimit"
 )
 
-// Rate limiting structures
-type RateLimiter struct {
-    clients    map[string]*ClientRate
-    mutex      sync.RWMutex
-    maxAttempts int
-    windowSize  time.Duration
-    blockDuration time.Duration
-}
-
-type ClientRate struct {
-    attempts    []time.Time
-    blockedUntil time.Time
-}
-
-func NewRateLimiter(maxAttempts int, windowSize time.Duration, blockDuration time.Duration) *RateLimiter {
-    return &RateLimiter{
-        clients:      make(map[string]*ClientRate),
-        maxAttempts:  maxAttempts,
-        windowSize:   windowSize,
-        blockDuration: blockDuration,
-    }
-}
-
-func (rl *RateLimiter) IsAllowed(clientIP string) bool {
-    rl.mutex.Lock()
-    defer rl.mutex.Unlock()
-    
-    now := time.Now()
-    
-    // Get or create client rate data
-    client, exists := rl.clients[clientIP]
-    if !exists {
-        client = &ClientRate{
-            attempts: make([]time.Time, 0),
-        }
-        rl.clients[clientIP] = client
-    }
-    
-    // Check if client is currently blocked
-    if now.Before(client.blockedUntil) {
-        return false
-    }
-    
-    // Remove old attempts outside the window
-    cutoff := now.Add(-rl.windowSize)
-    validAttempts := make([]time.Time, 0)
-    for _, attempt := range client.attempts {
-        if attempt.After(cutoff) {
-            validAttempts = append(validAttempts, attempt)
-        }
-    }
-    client.attempts = validAttempts
-    
-    // Check if we're at the limit
-    if len(client.attempts) >= rl.maxAttempts {
-        // Block the client
-        client.blockedUntil = now.Add(rl.blockDuration)
-        return false
-    }
-    
-    // Add current attempt
-    client.attempts = append(client.attempts, now)
-    
-    return true
-}
-
-// Cleanup old entries periodically
-func (rl *RateLimiter) Cleanup() {
-    rl.mutex.Lock()
-    defer rl.mutex.Unlock()
-    
-    now := time.Now()
-    cutoff := now.Add(-rl.windowSize)
-    
-    for ip, client := range rl.clients {
-        // Remove expired attempts
-        validAttempts := make([]time.Time, 0)
-        for _, attempt := range client.attempts {
-            if attempt.After(cutoff) {
-                validAttempts = append(validAttempts, attempt)
-            }
-        }
-        client.attempts = validAttempts
-        
-        // Remove clients with no recent activity and not blocked
-        if len(client.attempts) == 0 && now.After(client.blockedUntil) {
-            delete(rl.clients, ip)
-        }
-    }
-}
+// Rate limiting moved to internal/ratelimit package
 
 // Input validation and sanitization functions
 var (
@@ -422,7 +334,7 @@ type UnifiedTokenizer struct {
     debug           bool
     tokenFormat     string // "prefix" for tok_ format, "luhn" for Luhn-valid format
     useKEKDEK       bool   // Whether to use KEK/DEK encryption
-    authRateLimiter *RateLimiter // Rate limiter for authentication endpoints
+    authRateLimiter *ratelimit.RateLimiter // Rate limiter for authentication endpoints
     // Session security configuration
     sessionTimeout       time.Duration // Absolute session timeout
     sessionIdleTimeout   time.Duration // Idle session timeout 
@@ -771,7 +683,7 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
         debug:         utils.GetEnv("DEBUG_MODE", "0") == "1",
         tokenFormat:   tokenFormat,
         useKEKDEK:     useKEKDEK,
-        authRateLimiter: NewRateLimiter(5, 15*time.Minute, 15*time.Minute), // 5 attempts per 15 minutes, 15 minute block
+        authRateLimiter: ratelimit.NewRateLimiter(5, 15*time.Minute, 15*time.Minute), // 5 attempts per 15 minutes, 15 minute block
         // Session security configuration with environment variable support
         sessionTimeout:       utils.ParseTimeEnv("SESSION_TIMEOUT", "24h"),           // Default 24 hours
         sessionIdleTimeout:   utils.ParseTimeEnv("SESSION_IDLE_TIMEOUT", "4h"),       // Default 4 hours

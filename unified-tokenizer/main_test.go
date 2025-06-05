@@ -6,6 +6,7 @@ import (
 	"time"
 	
 	"tokenshield-unified/internal/utils"
+	"tokenshield-unified/internal/ratelimit"
 )
 
 // TestConfig holds test configuration
@@ -126,7 +127,7 @@ func TestHTTPTokenization(t *testing.T) {
 
 // TestRateLimiting tests rate limiting functionality
 func TestRateLimiting(t *testing.T) {
-	rl := NewRateLimiter(5, 15*time.Minute, 15*time.Minute)
+	rl := ratelimit.NewRateLimiter(5, 15*time.Minute, 15*time.Minute)
 	clientIP := "192.168.1.100"
 	
 	// First 5 attempts should succeed
