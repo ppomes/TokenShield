@@ -30,6 +30,7 @@ import (
     "tokenshield-unified/internal/utils"
     "tokenshield-unified/internal/ratelimit"
     "tokenshield-unified/internal/icap"
+    "tokenshield-unified/internal/tokenizer"
 )
 
 // Rate limiting moved to internal/ratelimit package
@@ -336,6 +337,7 @@ type UnifiedTokenizer struct {
     useKEKDEK       bool   // Whether to use KEK/DEK encryption
     authRateLimiter *ratelimit.RateLimiter // Rate limiter for authentication endpoints
     icapServer      *icap.Server           // ICAP protocol server
+    tokenizer       *tokenizer.Tokenizer   // Core tokenization engine
     // Session security configuration
     sessionTimeout       time.Duration // Absolute session timeout
     sessionIdleTimeout   time.Duration // Idle session timeout 
@@ -709,6 +711,16 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     // Initialize ICAP server
     ut.icapServer = icap.NewServer(ut, ut.debug)
     
+    // Initialize tokenizer
+    tokenizerConfig := tokenizer.TokenizerConfig{
+        TokenFormat: tokenFormat,
+        UseKEKDEK:   useKEKDEK,
+        DebugMode:   ut.debug,
+        TokenRegex:  tokenRegex,
+        CardRegex:   ut.cardRegex,
+    }
+    ut.tokenizer = tokenizer.NewTokenizer(tokenizerConfig, encKey, ut.keyManager, ut)
+    
     // Start rate limiter cleanup goroutine
     go func() {
         ticker := time.NewTicker(5 * time.Minute)
@@ -779,7 +791,7 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
     contentType := r.Header.Get("Content-Type")
     
     if strings.Contains(contentType, "application/json") && len(body) > 0 {
-        tokenized, modified, err := ut.TokenizeJSON(string(body))
+        tokenized, modified, err := ut.tokenizer.TokenizeJSON(string(body))
         if err != nil {
             log.Printf("Error tokenizing JSON: %v", err)
             processedBody = body
@@ -859,7 +871,7 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
         
         // Handle JSON responses (API)
         if strings.Contains(respContentType, "application/json") {
-            detokenized, modified, err := ut.DetokenizeJSON(string(respBody))
+            detokenized, modified, err := ut.tokenizer.DetokenizeJSON(string(respBody))
             if err != nil {
                 log.Printf("Error detokenizing JSON response: %v", err)
             } else if modified {
@@ -870,7 +882,7 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
             }
         } else if strings.Contains(respContentType, "text/html") {
             // Handle HTML responses (web pages)
-            detokenized, modified, err := ut.DetokenizeHTML(string(respBody))
+            detokenized, modified, err := ut.tokenizer.DetokenizeHTML(string(respBody))
             if err != nil {
                 log.Printf("Error detokenizing HTML response: %v", err)
             } else if modified {
@@ -911,196 +923,10 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
 
 
 
-// Tokenization logic
-func (ut *UnifiedTokenizer) TokenizeJSON(jsonStr string) (string, bool, error) {
-    var data interface{}
-    if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-        return jsonStr, false, err
-    }
-    
-    modified := false
-    ut.processValue(&data, &modified, true) // true for tokenization
-    
-    result, err := json.Marshal(data)
-    if err != nil {
-        return jsonStr, false, err
-    }
-    
-    return string(result), modified, nil
-}
 
-// Detokenization logic
-func (ut *UnifiedTokenizer) DetokenizeJSON(jsonStr string) (string, bool, error) {
-    if ut.debug {
-        log.Printf("DEBUG: detokenizeJSON called with: %s", jsonStr[:utils.Min(200, len(jsonStr))])
-    }
-    
-    var data interface{}
-    if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-        return jsonStr, false, err
-    }
-    
-    if ut.debug {
-        log.Printf("DEBUG: Unmarshaled data type: %T", data)
-    }
-    
-    modified := false
-    ut.processValue(&data, &modified, false) // false for detokenization
-    
-    if ut.debug {
-        log.Printf("DEBUG: detokenizeJSON modified=%v", modified)
-    }
-    
-    result, err := json.Marshal(data)
-    if err != nil {
-        return jsonStr, false, err
-    }
-    
-    return string(result), modified, nil
-}
 
-// Detokenize HTML content
-func (ut *UnifiedTokenizer) DetokenizeHTML(htmlStr string) (string, bool, error) {
-    if ut.debug {
-        log.Printf("DEBUG: detokenizeHTML called, length: %d", len(htmlStr))
-    }
-    
-    modified := false
-    result := htmlStr
-    
-    // Find all tokens in the HTML content
-    matches := ut.tokenRegex.FindAllString(htmlStr, -1)
-    if ut.debug {
-        log.Printf("DEBUG: Found %d potential tokens in HTML", len(matches))
-    }
-    
-    for _, token := range matches {
-        if ut.debug {
-            log.Printf("DEBUG: Attempting to detokenize token: %s", token)
-        }
-        if card := ut.retrieveCard(token); card != "" {
-            result = strings.ReplaceAll(result, token, card)
-            modified = true
-            log.Printf("Detokenized token %s in HTML content", token)
-        } else if ut.debug {
-            log.Printf("DEBUG: Failed to retrieve card for token: %s", token)
-        }
-    }
-    
-    return result, modified, nil
-}
 
-func (ut *UnifiedTokenizer) processValue(v interface{}, modified *bool, tokenize bool) {
-    switch val := v.(type) {
-    case *interface{}:
-        if ut.debug && !tokenize {
-            log.Printf("DEBUG: Processing pointer to interface{}")
-        }
-        ut.processValue(*val, modified, tokenize)
-    case map[string]interface{}:
-        if ut.debug && !tokenize {
-            log.Printf("DEBUG: Processing map with keys: %v", ut.getMapKeys(val))
-        }
-        for k, v := range val {
-            if ut.debug && !tokenize {
-                log.Printf("DEBUG: Processing map key '%s' with value type %T", k, v)
-            }
-            if tokenize && ut.isCreditCardField(k) {
-                if str, ok := v.(string); ok && ut.cardRegex.MatchString(str) {
-                    // Don't tokenize if it's already one of our tokens
-                    if ut.tokenFormat == "luhn" && strings.HasPrefix(str, "9999") {
-                        // This is already a token, skip it
-                        continue
-                    }
-                    token := ut.generateToken()
-                    if err := ut.storeCard(token, str); err == nil {
-                        val[k] = token
-                        *modified = true
-                        log.Printf("Tokenized card ending in %s", str[len(str)-4:])
-                    }
-                }
-            } else if !tokenize && ut.isCreditCardField(k) {
-                if str, ok := v.(string); ok {
-                    if ut.debug {
-                        log.Printf("DEBUG: Checking field '%s' with value '%s' for detokenization", k, str)
-                    }
-                    if ut.tokenRegex.MatchString(str) {
-                        if card := ut.retrieveCard(str); card != "" {
-                            val[k] = card
-                            *modified = true
-                            log.Printf("Detokenized token %s in field %s", str, k)
-                        } else if ut.debug {
-                            log.Printf("DEBUG: Failed to retrieve card for token %s", str)
-                        }
-                    } else if ut.debug {
-                        log.Printf("DEBUG: Value '%s' doesn't match token regex", str)
-                    }
-                }
-            } else {
-                if ut.debug && !tokenize {
-                    log.Printf("DEBUG: Recursively processing non-card field '%s' with value type %T", k, v)
-                }
-                ut.processValue(v, modified, tokenize)
-            }
-        }
-    case []interface{}:
-        if ut.debug && !tokenize {
-            log.Printf("DEBUG: Processing array with %d elements", len(val))
-        }
-        for i := range val {
-            if ut.debug && !tokenize && i == 0 {
-                log.Printf("DEBUG: First array element type: %T", val[i])
-            }
-            ut.processValue(&val[i], modified, tokenize)
-        }
-    case string:
-        // Handle string values that might contain tokens or card numbers
-        if tokenize && ut.cardRegex.MatchString(val) {
-            // This case is handled by the parent map processor
-        } else if !tokenize && ut.tokenRegex.MatchString(val) {
-            // This case is handled by the parent map processor  
-        }
-    }
-}
 
-func (ut *UnifiedTokenizer) getMapKeys(m map[string]interface{}) []string {
-    keys := make([]string, 0, len(m))
-    for k := range m {
-        keys = append(keys, k)
-    }
-    return keys
-}
-
-func (ut *UnifiedTokenizer) isCreditCardField(fieldName string) bool {
-    lowerField := strings.ToLower(fieldName)
-    // Exact matches to avoid false positives like "cards" matching "card"
-    exactMatches := []string{"card", "pan"}
-    for _, field := range exactMatches {
-        if lowerField == field {
-            return true
-        }
-    }
-    
-    // Partial matches for compound names
-    cardFields := []string{"card_number", "cardnumber", "creditcard", "credit_card", "account_number"}
-    for _, field := range cardFields {
-        if strings.Contains(lowerField, field) {
-            return true
-        }
-    }
-    return false
-}
-
-func (ut *UnifiedTokenizer) generateToken() string {
-    if ut.tokenFormat == "luhn" {
-        return ut.generateLuhnToken()
-    }
-    
-    // Default prefix format
-    b := make([]byte, 32)
-    cryptorand.Read(b)
-    return "tok_" + base64.URLEncoding.EncodeToString(b)
-}
 
 // calculateLuhnCheckDigit calculates the Luhn check digit for a given number
 func calculateLuhnCheckDigit(number string) int {
@@ -1125,26 +951,6 @@ func calculateLuhnCheckDigit(number string) int {
     return (10 - (sum % 10)) % 10
 }
 
-// generateLuhnToken generates a token that looks like a valid credit card number
-func (ut *UnifiedTokenizer) generateLuhnToken() string {
-    // Use prefix 9999 to distinguish tokens from real cards
-    // This prefix is not used by any real card issuer
-    prefix := "9999"
-    
-    // Generate 11 random digits
-    randomPart := make([]byte, 11)
-    for i := 0; i < 11; i++ {
-        randomPart[i] = byte(rand.Intn(10)) + '0'
-    }
-    
-    // Combine prefix and random part (15 digits total)
-    partial := prefix + string(randomPart)
-    
-    // Calculate and append Luhn check digit
-    checkDigit := calculateLuhnCheckDigit(partial)
-    
-    return partial + strconv.Itoa(checkDigit)
-}
 
 // Detect card type based on card number
 func DetectCardType(cardNumber string) string {
@@ -1240,35 +1046,28 @@ func IsValidLuhn(cardNumber string) bool {
     return sum%10 == 0
 }
 
-// encryptCardNumber encrypts card data using the appropriate method
-func (ut *UnifiedTokenizer) encryptCardNumber(data string) ([]byte, error) {
-    if ut.useKEKDEK && ut.keyManager != nil {
-        // Use KEK/DEK encryption
-        encrypted, _, err := ut.keyManager.EncryptData([]byte(data))
-        return encrypted, err
-    } else {
-        // Use legacy Fernet encryption
-        return fernet.EncryptAndSign([]byte(data), ut.encryptionKey)
-    }
+
+
+// StorageInterface implementation for tokenizer package
+func (ut *UnifiedTokenizer) StoreCard(token, cardNumber string) error {
+    return ut.storeCard(token, cardNumber)
 }
 
-// decryptCardNumber decrypts card data using the appropriate method
-func (ut *UnifiedTokenizer) decryptCardNumber(encryptedData []byte) (string, error) {
-    if ut.useKEKDEK && ut.keyManager != nil {
-        // Try KEK/DEK decryption first
-        decrypted, err := ut.keyManager.DecryptData(encryptedData, "")
-        if err == nil {
-            return string(decrypted), nil
-        }
-        // Fall back to legacy if KEK/DEK fails
-    }
-    
-    // Use legacy Fernet decryption
-    decrypted := fernet.VerifyAndDecrypt(encryptedData, 0, []*fernet.Key{ut.encryptionKey})
-    if decrypted == nil {
-        return "", fmt.Errorf("fernet decryption failed")
-    }
-    return string(decrypted), nil
+func (ut *UnifiedTokenizer) RetrieveCard(token string) string {
+    return ut.retrieveCard(token)
+}
+
+// ICAP Handler interface implementation - delegate to tokenizer package
+func (ut *UnifiedTokenizer) TokenizeJSON(jsonStr string) (string, bool, error) {
+    return ut.tokenizer.TokenizeJSON(jsonStr)
+}
+
+func (ut *UnifiedTokenizer) DetokenizeJSON(jsonStr string) (string, bool, error) {
+    return ut.tokenizer.DetokenizeJSON(jsonStr)
+}
+
+func (ut *UnifiedTokenizer) DetokenizeHTML(htmlStr string) (string, bool, error) {
+    return ut.tokenizer.DetokenizeHTML(htmlStr)
 }
 
 func (ut *UnifiedTokenizer) storeCard(token, cardNumber string) error {
@@ -3136,7 +2935,7 @@ func (ut *UnifiedTokenizer) checkCardExists(cardNumber string) (bool, string, er
         }
         
         // Decrypt and compare
-        decryptedCard, err := ut.decryptCardNumber(encryptedCard)
+        decryptedCard, err := ut.tokenizer.DecryptCardNumber(encryptedCard)
         if err != nil {
             continue
         }
@@ -3155,13 +2954,13 @@ func (ut *UnifiedTokenizer) tokenizeCardForImport(card CardImportRecord, tx *sql
     cleanCard := strings.ReplaceAll(strings.ReplaceAll(card.CardNumber, " ", ""), "-", "")
     
     // Generate token
-    token := ut.generateToken()
+    token := ut.tokenizer.GenerateToken()
     
     // Detect card type
     cardType := utils.DetectCardType(cleanCard)
     
     // Encrypt card number
-    encryptedCard, err := ut.encryptCardNumber(cleanCard)
+    encryptedCard, err := ut.tokenizer.EncryptCardNumber(cleanCard)
     if err != nil {
         return "", "", fmt.Errorf("failed to encrypt card: %v", err)
     }
@@ -3169,7 +2968,7 @@ func (ut *UnifiedTokenizer) tokenizeCardForImport(card CardImportRecord, tx *sql
     // Encrypt card holder name if provided
     var encryptedHolder []byte
     if card.CardHolder != "" {
-        encryptedHolder, err = ut.encryptCardNumber(card.CardHolder)
+        encryptedHolder, err = ut.tokenizer.EncryptCardNumber(card.CardHolder)
         if err != nil {
             return "", "", fmt.Errorf("failed to encrypt card holder: %v", err)
         }
