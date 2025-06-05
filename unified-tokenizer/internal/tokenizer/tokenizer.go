@@ -1,12 +1,10 @@
 package tokenizer
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/big"
 	cryptorand "crypto/rand"
 	"regexp"
 	"sort"
@@ -250,28 +248,10 @@ func (t *Tokenizer) generateToken() string {
 		return t.generateLuhnToken()
 	}
 	
-	// Default prefix format
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
-	const tokenLength = 16
-	
-	token := make([]byte, tokenLength)
-	for i := range token {
-		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-		if err != nil {
-			// Fallback to timestamp-based generation
-			return t.generateFallbackToken()
-		}
-		token[i] = charset[num.Int64()]
-	}
-	
-	tokenStr := "tok_" + string(token)
-	
-	// Ensure it doesn't conflict with card regex
-	if t.config.CardRegex.MatchString(tokenStr) {
-		return t.generateFallbackToken()
-	}
-	
-	return tokenStr
+	// Default prefix format - restore original logic
+	b := make([]byte, 32)
+	cryptorand.Read(b)
+	return "tok_" + base64.URLEncoding.EncodeToString(b)
 }
 
 // generateLuhnToken creates a Luhn-valid 16-digit token starting with 9999
@@ -302,16 +282,6 @@ func (t *Tokenizer) generateLuhnToken() string {
 	return digits + strconv.Itoa(checkDigit)
 }
 
-// generateFallbackToken creates a token using timestamp when crypto fails
-func (t *Tokenizer) generateFallbackToken() string {
-	timestamp := time.Now().UnixNano()
-	encoded := base64.URLEncoding.EncodeToString([]byte(strconv.FormatInt(timestamp, 10)))
-	
-	// Clean up the base64 padding
-	encoded = strings.TrimRight(encoded, "=")
-	
-	return "tok_" + encoded
-}
 
 // calculateLuhnCheckDigit calculates the Luhn algorithm check digit
 func (t *Tokenizer) calculateLuhnCheckDigit(digits string) int {
