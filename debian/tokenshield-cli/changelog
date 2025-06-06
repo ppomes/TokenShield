@@ -1,0 +1,13 @@
+tokenshield-cli (1.0.0-1) unstable; urgency=medium
+
+  * Initial release
+  * Complete CLI tool using Cobra framework
+  * Token management commands (list, search, revoke)
+  * API key operations (create, list, revoke)
+  * Activity monitoring and filtering
+  * Statistics viewing
+  * Configuration file support
+  * Shell completion support
+  * Cross-platform compatibility
+
+ -- Pierre Pomes <pierre.pomes@gmail.com>  Thu, 06 Jun 2025 10:00:00 +0000

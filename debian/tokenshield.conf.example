@@ -1,0 +1,50 @@
+# TokenShield CLI Configuration Example
+# 
+# Copy this file to ~/.config/tokenshield/config.yaml and modify as needed
+
+# API server configuration
+api:
+  # URL of the TokenShield API server
+  url: http://localhost:8090
+  
+  # API key for authentication
+  # Generate one using: tokenshield api-key create "My CLI"
+  # key: your-api-key-here
+  
+  # Request timeout in seconds
+  timeout: 30
+
+# Output preferences
+output:
+  # Default output format: table or json
+  format: table
+  
+  # Show colors in table output
+  colors: true
+  
+  # Show headers in table output
+  headers: true
+
+# Activity command defaults
+activity:
+  # Default number of records to show
+  limit: 20
+  
+  # Default sort order: asc or desc
+  order: desc
+
+# Token command defaults
+token:
+  # Default number of tokens to show in list
+  limit: 50
+  
+  # Show expired tokens
+  show_expired: false
+
+# Development/debugging options
+debug:
+  # Enable verbose HTTP logging
+  http_trace: false
+  
+  # Show API request/response details
+  show_requests: false

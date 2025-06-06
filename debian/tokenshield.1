@@ -1,0 +1,116 @@
+.TH TOKENSHIELD 1 "June 2025" "TokenShield 1.0.0" "User Commands"
+.SH NAME
+tokenshield \- TokenShield command-line interface
+.SH SYNOPSIS
+.B tokenshield
+[\fIOPTIONS\fR] \fICOMMAND\fR [\fIARGS\fR]
+.SH DESCRIPTION
+.B tokenshield
+is a command-line interface for managing the TokenShield PCI compliance gateway.
+It provides commands for managing tokens, API keys, viewing activity, and system statistics.
+.SH OPTIONS
+.TP
+.BR \-\-api\-url " " \fIURL\fR
+API server URL (default: http://localhost:8090)
+.TP
+.BR \-\-api\-key " " \fIKEY\fR
+API key for authentication
+.TP
+.BR \-\-output " " \fIFORMAT\fR
+Output format: json or table (default: table)
+.TP
+.BR \-h ", " \-\-help
+Show help message
+.SH COMMANDS
+.TP
+.B token
+Manage tokens (list, search, revoke)
+.TP
+.B api-key
+Manage API keys (create, list, revoke)
+.TP
+.B activity
+View system activity
+.TP
+.B stats
+View system statistics
+.TP
+.B config
+Manage configuration
+.TP
+.B version
+Show version information
+.TP
+.B help
+Help about any command
+.SH TOKEN COMMANDS
+.TP
+.B tokenshield token list
+List all tokens
+.TP
+.B tokenshield token search \fIQUERY\fR
+Search for tokens by last 4 digits or token value
+.TP
+.B tokenshield token revoke \fITOKEN\fR
+Revoke a specific token
+.SH API KEY COMMANDS
+.TP
+.B tokenshield api-key create \fINAME\fR
+Create a new API key with specified permissions
+.TP
+.B tokenshield api-key list
+List all API keys
+.TP
+.B tokenshield api-key revoke \fIKEY\fR
+Revoke an API key
+.SH EXAMPLES
+.PP
+List all tokens:
+.RS
+tokenshield token list
+.RE
+.PP
+Create a new API key:
+.RS
+tokenshield api-key create "My Application" --permissions read,write
+.RE
+.PP
+View recent activity:
+.RS
+tokenshield activity list --limit 50
+.RE
+.PP
+Show system statistics in JSON format:
+.RS
+tokenshield stats show --output json
+.RE
+.SH CONFIGURATION
+The tokenshield CLI can be configured using a configuration file located at:
+.RS
+~/.config/tokenshield/config.yaml
+.RE
+.PP
+Initialize a new configuration file:
+.RS
+tokenshield config init
+.RE
+.SH ENVIRONMENT
+.TP
+.B TOKENSHIELD_API_URL
+Default API server URL
+.TP
+.B TOKENSHIELD_API_KEY
+Default API key for authentication
+.SH FILES
+.TP
+.I ~/.config/tokenshield/config.yaml
+User configuration file
+.TP
+.I /etc/tokenshield/tokenshield.conf
+System-wide configuration file
+.SH SEE ALSO
+Full documentation at: https://github.com/ppomes/TokenShield
+.SH AUTHOR
+Pierre Pomes <pierre.pomes@gmail.com>
+.SH COPYRIGHT
+Copyright © 2024 TokenShield Contributors. License MIT.

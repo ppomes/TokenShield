@@ -1,0 +1,41 @@
+[Unit]
+Description=TokenShield Unified Tokenization Service
+Documentation=https://github.com/ppomes/TokenShield
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=tokenshield
+Group=tokenshield
+EnvironmentFile=-/etc/default/tokenshield-unified
+ExecStartPre=/usr/bin/tokenshield-unified --check-config
+ExecStart=/usr/bin/tokenshield-unified
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tokenshield-unified
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/tokenshield /var/lib/tokenshield
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=512
+
+[Install]
+WantedBy=multi-user.target

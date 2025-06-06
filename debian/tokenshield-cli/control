@@ -1,0 +1,33 @@
+Source: tokenshield-cli
+Section: utils
+Priority: optional
+Maintainer: Pierre Pomes <pierre.pomes@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               golang-go (>= 1.21),
+               dh-golang,
+               golang-github-spf13-cobra-dev,
+               golang-github-spf13-viper-dev,
+               golang-golang-x-term-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/ppomes/TokenShield
+Vcs-Browser: https://github.com/ppomes/TokenShield
+Vcs-Git: https://github.com/ppomes/TokenShield.git
+Rules-Requires-Root: no
+
+Package: tokenshield-cli
+Architecture: any
+Depends: ${shlibs:Depends},
+         ${misc:Depends}
+Suggests: tokenshield-unified
+Description: TokenShield command-line interface
+ TokenShield is a PCI compliance gateway demonstrating credit card
+ tokenization using modern proxy technologies. This package provides
+ the command-line interface for managing the TokenShield system.
+ .
+ Features include:
+  - Token management (list, search, revoke)
+  - API key operations (create, list, revoke)
+  - Activity monitoring
+  - Statistics viewing
+  - Configuration file support
+  - Cross-platform compatibility

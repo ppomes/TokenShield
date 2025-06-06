@@ -1,0 +1,40 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # Create tokenshield user and group if they don't exist
+        if ! getent group tokenshield >/dev/null; then
+            addgroup --system tokenshield
+        fi
+        
+        if ! getent passwd tokenshield >/dev/null; then
+            adduser --system --ingroup tokenshield --home /var/lib/tokenshield \
+                --no-create-home --shell /bin/false tokenshield
+        fi
+        
+        # Set proper ownership for directories
+        chown -R tokenshield:tokenshield /var/log/tokenshield
+        chown -R tokenshield:tokenshield /var/lib/tokenshield
+        
+        # Set proper permissions
+        chmod 755 /var/log/tokenshield
+        chmod 755 /var/lib/tokenshield
+        chmod 640 /etc/default/tokenshield-unified
+        
+        # Reload systemd
+        systemctl daemon-reload || true
+        ;;
+    
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

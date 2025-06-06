@@ -1,0 +1,46 @@
+# bash completion for tokenshield
+
+_tokenshield_completion() {
+    local cur prev words cword
+    _init_completion || return
+
+    local commands="token api-key activity stats config version help"
+    local token_commands="list search revoke"
+    local apikey_commands="create list revoke"
+    local activity_commands="list"
+    local stats_commands="show"
+    local config_commands="init show set"
+
+    case "${prev}" in
+        tokenshield)
+            COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
+            ;;
+        token)
+            COMPREPLY=( $(compgen -W "${token_commands}" -- "${cur}") )
+            ;;
+        api-key)
+            COMPREPLY=( $(compgen -W "${apikey_commands}" -- "${cur}") )
+            ;;
+        activity)
+            COMPREPLY=( $(compgen -W "${activity_commands}" -- "${cur}") )
+            ;;
+        stats)
+            COMPREPLY=( $(compgen -W "${stats_commands}" -- "${cur}") )
+            ;;
+        config)
+            COMPREPLY=( $(compgen -W "${config_commands}" -- "${cur}") )
+            ;;
+        --api-url|--api-key|--output)
+            # These flags expect values, no completion
+            ;;
+        *)
+            # Check for global flags
+            if [[ "${cur}" == -* ]]; then
+                local global_flags="--api-url --api-key --output --help"
+                COMPREPLY=( $(compgen -W "${global_flags}" -- "${cur}") )
+            fi
+            ;;
+    esac
+}
+
+complete -F _tokenshield_completion tokenshield

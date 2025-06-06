@@ -1,0 +1,81 @@
+#compdef tokenshield
+
+_tokenshield() {
+    local -a commands
+    commands=(
+        'token:Manage tokens'
+        'api-key:Manage API keys'
+        'activity:View system activity'
+        'stats:View system statistics'
+        'config:Manage configuration'
+        'version:Show version information'
+        'help:Help about any command'
+    )
+
+    local -a token_commands
+    token_commands=(
+        'list:List all tokens'
+        'search:Search for tokens'
+        'revoke:Revoke a token'
+    )
+
+    local -a apikey_commands
+    apikey_commands=(
+        'create:Create a new API key'
+        'list:List all API keys'
+        'revoke:Revoke an API key'
+    )
+
+    local -a activity_commands
+    activity_commands=(
+        'list:List recent activity'
+    )
+
+    local -a stats_commands
+    stats_commands=(
+        'show:Show system statistics'
+    )
+
+    local -a config_commands
+    config_commands=(
+        'init:Initialize configuration file'
+        'show:Show current configuration'
+        'set:Set configuration value'
+    )
+
+    _arguments -C \
+        '1: :->command' \
+        '2: :->subcommand' \
+        '--api-url[API server URL]:url:' \
+        '--api-key[API key for authentication]:key:' \
+        '--output[Output format]:format:(json table)' \
+        '--help[Show help]' \
+        '*::arg:->args'
+
+    case $state in
+        command)
+            _describe -t commands 'tokenshield command' commands
+            ;;
+        subcommand)
+            case $words[1] in
+                token)
+                    _describe -t commands 'token command' token_commands
+                    ;;
+                api-key)
+                    _describe -t commands 'api-key command' apikey_commands
+                    ;;
+                activity)
+                    _describe -t commands 'activity command' activity_commands
+                    ;;
+                stats)
+                    _describe -t commands 'stats command' stats_commands
+                    ;;
+                config)
+                    _describe -t commands 'config command' config_commands
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_tokenshield "$@"

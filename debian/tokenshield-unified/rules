@@ -1,0 +1,53 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+export DH_GOPKG = tokenshield-unified
+export DH_GOLANG_INSTALL_ALL = 1
+export DH_GOLANG_GO_GENERATE = 1
+
+# Set build flags for security hardening
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export DEB_LDFLAGS_MAINT_APPEND = -Wl,-z,now
+
+%:
+	dh $@ --builddirectory=_build --buildsystem=golang
+
+override_dh_auto_clean:
+	dh_auto_clean
+	rm -rf _build
+
+override_dh_auto_configure:
+	dh_auto_configure
+	# Copy the source to the build directory
+	mkdir -p _build/src/$(DH_GOPKG)
+	cp -r unified-tokenizer/* _build/src/$(DH_GOPKG)/
+
+override_dh_auto_build:
+	cd _build/src/$(DH_GOPKG) && \
+	go mod download && \
+	go build -ldflags="-s -w -X main.Version=1.0.0" -o tokenshield-unified main.go
+
+override_dh_auto_test:
+	# Skip tests for now - can be enabled later
+	# cd _build/src/$(DH_GOPKG) && go test -v ./...
+
+override_dh_auto_install:
+	dh_auto_install
+	# Install the binary
+	install -D -m 0755 _build/src/$(DH_GOPKG)/tokenshield-unified \
+		debian/tokenshield-unified/usr/bin/tokenshield-unified
+	# Install the systemd service file
+	install -D -m 0644 debian/tokenshield-unified.service \
+		debian/tokenshield-unified/lib/systemd/system/tokenshield-unified.service
+	# Install default configuration
+	install -D -m 0644 debian/tokenshield-unified.default \
+		debian/tokenshield-unified/etc/default/tokenshield-unified
+	# Create necessary directories
+	install -d -m 0755 debian/tokenshield-unified/var/log/tokenshield
+	install -d -m 0755 debian/tokenshield-unified/var/lib/tokenshield
+
+override_dh_installsystemd:
+	dh_installsystemd --name=tokenshield-unified --no-enable --no-start
+
+override_dh_strip:
+	dh_strip --no-automatic-dbgsym

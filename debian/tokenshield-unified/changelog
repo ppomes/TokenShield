@@ -1,0 +1,13 @@
+tokenshield-unified (1.0.0-1) unstable; urgency=medium
+
+  * Initial release
+  * HTTP tokenization server on port 8080
+  * ICAP detokenization server on port 1344
+  * REST management API on port 8090
+  * KEK/DEK encryption support with AES-GCM
+  * Configurable token formats (prefix and Luhn-valid)
+  * Rate limiting for authentication endpoints
+  * Session security with configurable timeouts
+  * Two-tier audit logging system
+
+ -- Pierre Pomes <pierre.pomes@gmail.com>  Thu, 06 Jun 2025 10:00:00 +0000

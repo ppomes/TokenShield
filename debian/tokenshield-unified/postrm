@@ -1,0 +1,31 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    purge)
+        # Remove tokenshield user and group if they exist
+        if getent passwd tokenshield >/dev/null; then
+            deluser --quiet tokenshield || true
+        fi
+        
+        if getent group tokenshield >/dev/null; then
+            delgroup --quiet tokenshield || true
+        fi
+        
+        # Remove log and data directories
+        rm -rf /var/log/tokenshield
+        rm -rf /var/lib/tokenshield
+        ;;
+    
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+    
+    *)
+        echo "postrm called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

@@ -1,0 +1,33 @@
+Source: tokenshield-unified
+Section: net
+Priority: optional
+Maintainer: Pierre Pomes <pierre.pomes@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               golang-go (>= 1.21),
+               dh-golang,
+               golang-golang-x-crypto-dev,
+               golang-github-go-sql-driver-mysql-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/ppomes/TokenShield
+Vcs-Browser: https://github.com/ppomes/TokenShield
+Vcs-Git: https://github.com/ppomes/TokenShield.git
+Rules-Requires-Root: no
+
+Package: tokenshield-unified
+Architecture: any
+Depends: ${shlibs:Depends},
+         ${misc:Depends}
+Recommends: mysql-client | mariadb-client
+Suggests: tokenshield-cli
+Description: TokenShield unified tokenization service
+ TokenShield is a PCI compliance gateway demonstrating credit card
+ tokenization using modern proxy technologies. The unified service
+ provides HTTP tokenization, ICAP detokenization, and a management
+ REST API.
+ .
+ This package contains the unified tokenizer service that handles:
+  - HTTP tokenization server (port 8080)
+  - ICAP detokenization server (port 1344)
+  - REST management API (port 8090)
+  - KEK/DEK encryption support
+  - Configurable token formats

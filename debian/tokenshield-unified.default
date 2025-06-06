@@ -1,0 +1,45 @@
+# Default configuration for tokenshield-unified
+
+# Database configuration
+DB_HOST="localhost"
+DB_PORT="3306"
+DB_USER="pciproxy"
+DB_PASSWORD="pciproxy123"
+DB_NAME="tokenshield"
+
+# Service ports
+HTTP_PORT="8080"
+ICAP_PORT="1344"
+API_PORT="8090"
+
+# Token configuration
+TOKEN_FORMAT="prefix"
+# TOKEN_FORMAT="luhn"
+
+# Encryption settings
+USE_KEK_DEK="false"
+# ENCRYPTION_KEY="base64_encoded_key_here"
+
+# Admin configuration
+ADMIN_SECRET="change-this-admin-secret"
+
+# Session configuration
+SESSION_TIMEOUT="24h"
+SESSION_IDLE_TIMEOUT="4h"
+MAX_CONCURRENT_SESSIONS="5"
+
+# Logging
+LOG_LEVEL="info"
+LOG_FORMAT="json"
+
+# Rate limiting
+RATE_LIMIT_ENABLED="true"
+RATE_LIMIT_REQUESTS="5"
+RATE_LIMIT_WINDOW="15m"
+
+# CORS settings
+CORS_ENABLED="true"
+CORS_ORIGINS="*"
+
+# Additional options
+# EXTRA_OPTS=""
