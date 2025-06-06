@@ -1,7 +1,7 @@
 #!/bin/bash
 
 echo "=== TokenShield Integration Test Suite ==="
-echo "Testing all flows before refactoring..."
+echo "Testing all flows..."
 echo
 
 # Colors for output
@@ -300,10 +300,10 @@ main() {
     echo -e "${RED}Failed: $FAIL${NC}"
     
     if [ $FAIL -eq 0 ]; then
-        echo -e "${GREEN}🎉 All tests passed! System is ready for refactoring.${NC}"
+        echo -e "${GREEN}🎉 All tests passed!${NC}"
         exit 0
     else
-        echo -e "${RED}❌ $FAIL test(s) failed. Fix issues before refactoring.${NC}"
+        echo -e "${RED}❌ $FAIL test(s) failed.${NC}"
         exit 1
     fi
 }

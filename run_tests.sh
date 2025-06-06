@@ -1,7 +1,7 @@
 #!/bin/bash
 
 echo "=== TokenShield Test Suite Runner ==="
-echo "Running all tests before refactoring..."
+echo "Running all tests..."
 echo
 
 # Colors for output
@@ -239,20 +239,10 @@ generate_report() {
     echo -e "Failed: ${RED}$TOTAL_FAIL${NC}"
     
     if [ $TOTAL_FAIL -eq 0 ]; then
-        echo -e "${GREEN}🎉 All tests passed! System is ready for refactoring.${NC}"
-        echo
-        echo "Next steps:"
-        echo "1. Create git branch for refactoring"
-        echo "2. Run tests after each refactoring step"
-        echo "3. Ensure all tests still pass"
+        echo -e "${GREEN}🎉 All tests passed!${NC}"
         return 0
     else
         echo -e "${RED}❌ $TOTAL_FAIL test(s) failed.${NC}"
-        echo
-        echo "Please fix the following before refactoring:"
-        echo "- Review test failures above"
-        echo "- Check system logs for errors"
-        echo "- Ensure all services are running properly"
         return 1
     fi
 }
@@ -266,7 +256,6 @@ save_results() {
     "passed": $TOTAL_PASS,
     "failed": $TOTAL_FAIL,
     "success": $([ $TOTAL_FAIL -eq 0 ] && echo "true" || echo "false"),
-    "system_ready_for_refactoring": $([ $TOTAL_FAIL -eq 0 ] && echo "true" || echo "false")
 }
 EOF
     
