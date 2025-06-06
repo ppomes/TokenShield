@@ -46,3 +46,7 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# CLI binaries
+cli/tokenshield
+cli/tokenshield-*
