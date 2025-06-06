@@ -225,7 +225,7 @@ export function ActivityList() {
               paginationModel: { pageSize: 25 },
             },
           }}
-          getRowId={(row) => `${row.timestamp}-${row.token}-${row.source_ip}`}
+          getRowId={(row) => row.id}
           disableRowSelectionOnClick
         />
       </Paper>

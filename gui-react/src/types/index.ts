@@ -28,6 +28,7 @@ export interface Token {
 }
 
 export interface Activity {
+  id: number;
   token: string;
   timestamp: string;
   type: string;

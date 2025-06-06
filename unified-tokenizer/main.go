@@ -1802,7 +1802,7 @@ func (ut *UnifiedTokenizer) handleGetActivity(w http.ResponseWriter, r *http.Req
     }
     
     rows, err := ut.db.Query(`
-        SELECT tr.token, tr.request_type, tr.source_ip, tr.destination_url, 
+        SELECT tr.id, tr.token, tr.request_type, tr.source_ip, tr.destination_url, 
                tr.request_timestamp, tr.response_status, cc.last_four_digits
         FROM token_requests tr
         LEFT JOIN credit_cards cc ON tr.token = cc.token
@@ -1820,18 +1820,20 @@ func (ut *UnifiedTokenizer) handleGetActivity(w http.ResponseWriter, r *http.Req
     var activities []map[string]interface{}
     
     for rows.Next() {
+        var id int
         var token, requestType, sourceIP, destinationURL string
         var requestTimestamp time.Time
         var responseStatus sql.NullInt64
         var lastFour sql.NullString
         
-        err := rows.Scan(&token, &requestType, &sourceIP, &destinationURL, 
+        err := rows.Scan(&id, &token, &requestType, &sourceIP, &destinationURL, 
                         &requestTimestamp, &responseStatus, &lastFour)
         if err != nil {
             continue
         }
         
         activity := map[string]interface{}{
+            "id":          id,
             "token":       token,
             "type":        requestType,
             "source_ip":   sourceIP,
