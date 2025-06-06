@@ -123,11 +123,14 @@ test_card_storage() {
     echo
     echo "=== Testing Card Storage and Retrieval ==="
     
-    # Clear any existing cards first
+    # Make test payment and capture the token
     info "Making test payment to store a card"
-    curl -s -X POST $BASE_URL/api/checkout \
+    checkout_response=$(curl -s -X POST $BASE_URL/api/checkout \
         -H "Content-Type: application/json" \
-        -d '{"card_holder":"Test User","card_number":"4532015112830366","expiry":"12/25","cvv":"123","amount":50.00}' > /dev/null
+        -d '{"card_holder":"Test User","card_number":"4532015112830366","expiry":"12/25","cvv":"123","amount":50.00}')
+    
+    # Extract the token from checkout response
+    token_used=$(echo "$checkout_response" | jq -r '.token_used')
     
     # Check if card was stored
     cards_response=$(curl -s $BASE_URL/api/cards)
@@ -136,8 +139,8 @@ test_card_storage() {
     if [ "$card_count" -gt 0 ]; then
         pass "Card was stored successfully ($card_count cards found)"
         
-        # Verify card was detokenized for display
-        displayed_card=$(echo "$cards_response" | jq -r '.cards[0].card_number')
+        # Find the most recent card by cardholder and verify it was detokenized
+        displayed_card=$(echo "$cards_response" | jq -r '.cards[] | select(.card_holder == "Test User") | {id, card_number}' | jq -sr 'sort_by(.id) | reverse | .[0].card_number')
         if [ "$displayed_card" = "4532015112830366" ]; then
             pass "Card was properly detokenized for display"
         else
