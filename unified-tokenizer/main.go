@@ -1458,13 +1458,41 @@ func (ut *UnifiedTokenizer) authenticateAPIRequest(r *http.Request) bool {
 func (ut *UnifiedTokenizer) handleAPIListTokens(w http.ResponseWriter, r *http.Request) {
     // Permission check is handled by requirePermission middleware
     
+    // Parse query parameters
+    limitStr := r.URL.Query().Get("limit")
+    offsetStr := r.URL.Query().Get("offset")
+    
+    limit := 100 // default
+    if limitStr != "" {
+        if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 1000 {
+            limit = l
+        }
+    }
+    
+    offset := 0 // default
+    if offsetStr != "" {
+        if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+            offset = o
+        }
+    }
+    
+    // Get total count
+    var total int
+    err := ut.db.QueryRow("SELECT COUNT(*) FROM credit_cards").Scan(&total)
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Database error"})
+        return
+    }
+    
+    // Get tokens with pagination
     rows, err := ut.db.Query(`
         SELECT token, card_type, last_four_digits, first_six_digits, 
                created_at, is_active
         FROM credit_cards
         ORDER BY created_at DESC
-        LIMIT 100
-    `)
+        LIMIT ? OFFSET ?
+    `, limit, offset)
     if err != nil {
         w.WriteHeader(http.StatusInternalServerError)
         json.NewEncoder(w).Encode(map[string]string{"error": "Internal server error"})
@@ -1504,7 +1532,10 @@ func (ut *UnifiedTokenizer) handleAPIListTokens(w http.ResponseWriter, r *http.R
     }
     
     w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(map[string]interface{}{"tokens": tokens})
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "tokens": tokens,
+        "total":  total,
+    })
 }
 
 func (ut *UnifiedTokenizer) handleAPIGetToken(w http.ResponseWriter, r *http.Request) {
@@ -1830,11 +1861,11 @@ func (ut *UnifiedTokenizer) handleSearchTokens(w http.ResponseWriter, r *http.Re
     // Permission check is handled by requirePermission middleware
     
     var req struct {
-        LastFour  string `json:"last_four,omitempty"`
-        CardType  string `json:"card_type,omitempty"`
+        LastFour  string `json:"lastFour,omitempty"`
+        CardType  string `json:"cardType,omitempty"`
         DateFrom  string `json:"date_from,omitempty"`
         DateTo    string `json:"date_to,omitempty"`
-        IsActive  *bool  `json:"is_active,omitempty"`
+        IsActive  *bool  `json:"active,omitempty"`
         Limit     int    `json:"limit,omitempty"`
     }
     
@@ -1848,40 +1879,52 @@ func (ut *UnifiedTokenizer) handleSearchTokens(w http.ResponseWriter, r *http.Re
         req.Limit = 100
     }
     
-    // Build dynamic query
-    query := `SELECT token, card_type, last_four_digits, first_six_digits, 
-                     created_at, is_active FROM credit_cards WHERE 1=1`
+    // Build dynamic query conditions
+    whereClause := "WHERE 1=1"
     args := []interface{}{}
     
     if req.LastFour != "" {
-        query += " AND last_four_digits = ?"
+        whereClause += " AND last_four_digits = ?"
         args = append(args, req.LastFour)
     }
     
     if req.CardType != "" {
-        query += " AND card_type = ?"
+        whereClause += " AND card_type = ?"
         args = append(args, req.CardType)
     }
     
     if req.DateFrom != "" {
-        query += " AND created_at >= ?"
+        whereClause += " AND created_at >= ?"
         args = append(args, req.DateFrom)
     }
     
     if req.DateTo != "" {
-        query += " AND created_at <= ?"
+        whereClause += " AND created_at <= ?"
         args = append(args, req.DateTo)
     }
     
     if req.IsActive != nil {
-        query += " AND is_active = ?"
+        whereClause += " AND is_active = ?"
         args = append(args, *req.IsActive)
     }
     
-    query += " ORDER BY created_at DESC LIMIT ?"
-    args = append(args, req.Limit)
+    // Get total count first
+    var total int
+    countQuery := "SELECT COUNT(*) FROM credit_cards " + whereClause
+    err := ut.db.QueryRow(countQuery, args...).Scan(&total)
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]string{"error": "Database error"})
+        return
+    }
     
-    rows, err := ut.db.Query(query, args...)
+    // Build main query with pagination (create new args slice)
+    query := `SELECT token, card_type, last_four_digits, first_six_digits, 
+                     created_at, is_active FROM credit_cards ` + whereClause + 
+                     " ORDER BY created_at DESC LIMIT ?"
+    queryArgs := append(args, req.Limit)
+    
+    rows, err := ut.db.Query(query, queryArgs...)
     if err != nil {
         w.WriteHeader(http.StatusInternalServerError)
         json.NewEncoder(w).Encode(map[string]string{"error": "Database error"})
@@ -1920,7 +1963,7 @@ func (ut *UnifiedTokenizer) handleSearchTokens(w http.ResponseWriter, r *http.Re
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(map[string]interface{}{
         "tokens": tokens,
-        "total":  len(tokens),
+        "total":  total,
     })
 }
 
