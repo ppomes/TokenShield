@@ -250,6 +250,7 @@ var tokenListCmd = &cobra.Command{
 	Short: "List all tokens",
 	Run: func(cmd *cobra.Command, args []string) {
 		limit, _ := cmd.Flags().GetInt("limit")
+		full, _ := cmd.Flags().GetBool("full")
 		
 		client := NewClient(apiURL, apiKey, adminSecret, sessionID)
 		endpoint := fmt.Sprintf("/api/v1/tokens?limit=%d", limit)
@@ -274,23 +275,47 @@ var tokenListCmd = &cobra.Command{
 		tokens := result["tokens"].([]interface{})
 		
 		fmt.Printf("Found %d tokens:\n\n", len(tokens))
-		fmt.Printf("%-50s %-12s %-8s %-10s %-20s\n", "TOKEN", "CARD_TYPE", "LAST_4", "ACTIVE", "CREATED")
-		fmt.Printf("%s\n", strings.Repeat("-", 100))
 		
-		for _, t := range tokens {
-			token := t.(map[string]interface{})
-			cardType := "Unknown"
-			if token["card_type"] != nil {
-				cardType = token["card_type"].(string)
-			}
+		if full {
+			// Full format for revocation - no truncation
+			fmt.Printf("%-70s %-12s %-8s %-10s %-20s\n", "TOKEN", "CARD_TYPE", "LAST_4", "ACTIVE", "CREATED")
+			fmt.Printf("%s\n", strings.Repeat("-", 120))
 			
-			fmt.Printf("%-50s %-12s %-8s %-10v %-20s\n",
-				truncateString(token["token"].(string), 47),
-				cardType,
-				token["last_four"].(string),
-				token["is_active"].(bool),
-				formatTime(token["created_at"].(string)),
-			)
+			for _, t := range tokens {
+				token := t.(map[string]interface{})
+				cardType := "Unknown"
+				if token["card_type"] != nil {
+					cardType = token["card_type"].(string)
+				}
+				
+				fmt.Printf("%-70s %-12s %-8s %-10v %-20s\n",
+					token["token"].(string), // Full token, no truncation
+					cardType,
+					token["last_four"].(string),
+					token["is_active"].(bool),
+					formatTime(token["created_at"].(string)),
+				)
+			}
+		} else {
+			// Compact format for overview
+			fmt.Printf("%-50s %-12s %-8s %-10s %-20s\n", "TOKEN", "CARD_TYPE", "LAST_4", "ACTIVE", "CREATED")
+			fmt.Printf("%s\n", strings.Repeat("-", 100))
+			
+			for _, t := range tokens {
+				token := t.(map[string]interface{})
+				cardType := "Unknown"
+				if token["card_type"] != nil {
+					cardType = token["card_type"].(string)
+				}
+				
+				fmt.Printf("%-50s %-12s %-8s %-10v %-20s\n",
+					truncateString(token["token"].(string), 47),
+					cardType,
+					token["last_four"].(string),
+					token["is_active"].(bool),
+					formatTime(token["created_at"].(string)),
+				)
+			}
 		}
 	},
 }
@@ -989,6 +1014,7 @@ func init() {
 
 	// Token command flags
 	tokenListCmd.Flags().IntP("limit", "l", 100, "Maximum number of tokens to list")
+	tokenListCmd.Flags().BoolP("full", "f", false, "Show full token strings (needed for revocation)")
 	tokenSearchCmd.Flags().String("last-four", "", "Filter by last four digits")
 	tokenSearchCmd.Flags().String("card-type", "", "Filter by card type (Visa, Mastercard, etc.)")
 	tokenSearchCmd.Flags().IntP("limit", "l", 50, "Maximum number of tokens to return")
