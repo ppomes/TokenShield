@@ -791,7 +791,7 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
     contentType := r.Header.Get("Content-Type")
     
     if strings.Contains(contentType, "application/json") && len(body) > 0 {
-        tokenized, modified, err := ut.tokenizer.TokenizeJSON(string(body))
+        tokenized, modified, err := ut.tokenizeJSON(string(body))
         if err != nil {
             log.Printf("Error tokenizing JSON: %v", err)
             processedBody = body
@@ -871,7 +871,7 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
         
         // Handle JSON responses (API)
         if strings.Contains(respContentType, "application/json") {
-            detokenized, modified, err := ut.tokenizer.DetokenizeJSON(string(respBody))
+            detokenized, modified, err := ut.detokenizeJSON(string(respBody))
             if err != nil {
                 log.Printf("Error detokenizing JSON response: %v", err)
             } else if modified {
@@ -882,7 +882,7 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
             }
         } else if strings.Contains(respContentType, "text/html") {
             // Handle HTML responses (web pages)
-            detokenized, modified, err := ut.tokenizer.DetokenizeHTML(string(respBody))
+            detokenized, modified, err := ut.detokenizeHTML(string(respBody))
             if err != nil {
                 log.Printf("Error detokenizing HTML response: %v", err)
             } else if modified {
@@ -1087,7 +1087,7 @@ func (ut *UnifiedTokenizer) DetokenizeJSON(jsonStr string) (string, bool, error)
 // Original working detokenizeJSON implementation
 func (ut *UnifiedTokenizer) detokenizeJSON(jsonStr string) (string, bool, error) {
     if ut.debug {
-        log.Printf("DEBUG: detokenizeJSON called with: %s", jsonStr[:min(200, len(jsonStr))])
+        log.Printf("DEBUG: detokenizeJSON called with: %s", jsonStr[:utils.Min(200, len(jsonStr))])
     }
     
     var data interface{}
@@ -1272,8 +1272,70 @@ func (ut *UnifiedTokenizer) calculateLuhnCheckDigit(number string) int {
     return (10 - (sum % 10)) % 10
 }
 
+// encryptCardNumber encrypts card data using the appropriate method
+func (ut *UnifiedTokenizer) encryptCardNumber(data string) ([]byte, error) {
+    if ut.useKEKDEK && ut.keyManager != nil {
+        // Use KEK/DEK encryption
+        encrypted, _, err := ut.keyManager.EncryptData([]byte(data))
+        return encrypted, err
+    } else {
+        // Use legacy Fernet encryption
+        return fernet.EncryptAndSign([]byte(data), ut.encryptionKey)
+    }
+}
+
+// decryptCardNumber decrypts card data using the appropriate method
+func (ut *UnifiedTokenizer) decryptCardNumber(encryptedData []byte) (string, error) {
+    if ut.useKEKDEK && ut.keyManager != nil {
+        // Try KEK/DEK decryption first
+        decrypted, err := ut.keyManager.DecryptData(encryptedData, "")
+        if err == nil {
+            return string(decrypted), nil
+        }
+        // Fall back to legacy if KEK/DEK fails
+    }
+    
+    // Use legacy Fernet decryption
+    decrypted := fernet.VerifyAndDecrypt(encryptedData, 0, []*fernet.Key{ut.encryptionKey})
+    if decrypted == nil {
+        return "", fmt.Errorf("fernet decryption failed")
+    }
+    return string(decrypted), nil
+}
+
+// detokenizeHTML detokenizes tokens in HTML content
+func (ut *UnifiedTokenizer) detokenizeHTML(htmlStr string) (string, bool, error) {
+    if ut.debug {
+        log.Printf("DEBUG: detokenizeHTML called, length: %d", len(htmlStr))
+    }
+    
+    modified := false
+    result := htmlStr
+    
+    // Find all tokens in the HTML content
+    matches := ut.tokenRegex.FindAllString(htmlStr, -1)
+    if ut.debug {
+        log.Printf("DEBUG: Found %d potential tokens in HTML", len(matches))
+    }
+    
+    for _, token := range matches {
+        if ut.debug {
+            log.Printf("DEBUG: Attempting to detokenize token: %s", token)
+        }
+        if card := ut.retrieveCard(token); card != "" {
+            result = strings.ReplaceAll(result, token, card)
+            modified = true
+            log.Printf("Detokenized token %s in HTML content", token)
+        } else if ut.debug {
+            log.Printf("DEBUG: Failed to retrieve card for token: %s", token)
+        }
+    }
+    
+    return result, modified, nil
+}
+
 func (ut *UnifiedTokenizer) DetokenizeHTML(htmlStr string) (string, bool, error) {
-    return ut.tokenizer.DetokenizeHTML(htmlStr)
+    return ut.detokenizeHTML(htmlStr)
 }
 
 func (ut *UnifiedTokenizer) storeCard(token, cardNumber string) error {
@@ -3141,7 +3203,7 @@ func (ut *UnifiedTokenizer) checkCardExists(cardNumber string) (bool, string, er
         }
         
         // Decrypt and compare
-        decryptedCard, err := ut.tokenizer.DecryptCardNumber(encryptedCard)
+        decryptedCard, err := ut.decryptCardNumber(encryptedCard)
         if err != nil {
             continue
         }
@@ -3160,13 +3222,13 @@ func (ut *UnifiedTokenizer) tokenizeCardForImport(card CardImportRecord, tx *sql
     cleanCard := strings.ReplaceAll(strings.ReplaceAll(card.CardNumber, " ", ""), "-", "")
     
     // Generate token
-    token := ut.tokenizer.GenerateToken()
+    token := ut.generateToken()
     
     // Detect card type
     cardType := utils.DetectCardType(cleanCard)
     
     // Encrypt card number
-    encryptedCard, err := ut.tokenizer.EncryptCardNumber(cleanCard)
+    encryptedCard, err := ut.encryptCardNumber(cleanCard)
     if err != nil {
         return "", "", fmt.Errorf("failed to encrypt card: %v", err)
     }
@@ -3174,7 +3236,7 @@ func (ut *UnifiedTokenizer) tokenizeCardForImport(card CardImportRecord, tx *sql
     // Encrypt card holder name if provided
     var encryptedHolder []byte
     if card.CardHolder != "" {
-        encryptedHolder, err = ut.tokenizer.EncryptCardNumber(card.CardHolder)
+        encryptedHolder, err = ut.encryptCardNumber(card.CardHolder)
         if err != nil {
             return "", "", fmt.Errorf("failed to encrypt card holder: %v", err)
         }
