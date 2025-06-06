@@ -52,13 +52,31 @@ docker-compose ps
 echo
 echo "=== TokenShield is ready! ==="
 echo
-echo "🌐 Web Interface: http://localhost"
-echo "📊 HAProxy Stats: http://localhost:8404/stats"
-echo "🔧 Management API: http://localhost:8090"
+echo "🖥️  GUI Dashboards:"
+echo "   • React GUI:        http://localhost:8082  (Modern interface)"
+echo "   • Legacy GUI:       http://localhost:8081  (Classic interface)"
 echo
-echo "Test credit cards:"
-echo "  - Visa: 4532015112830366"
-echo "  - Mastercard: 5425233430109903"
+echo "🌐 Core Services:"
+echo "   • Demo App:         http://localhost       (E-commerce demo)"
+echo "   • Management API:   http://localhost:8090  (REST API)"
+echo "   • HAProxy Stats:    http://localhost:8404/stats"
 echo
-echo "Run './test-flow.sh' to see the tokenization in action"
-echo "Run 'docker-compose logs -f' to view logs"
+echo "🧪 Development/Testing:"
+echo "   • Dummy Gateway:    http://localhost:9000  (Payment simulator)"
+echo "   • Card Distributor: http://localhost:5001  (Card data API)"
+echo
+echo "🔧 Internal Services:"
+echo "   • Tokenizer HTTP:   http://localhost:8080  (Direct tokenization)"
+echo "   • Squid Proxy:      http://localhost:3128  (Outbound proxy)"
+echo "   • MySQL Database:   localhost:3306         (tokenshield/pciproxy123)"
+echo
+echo "📋 Test Credit Cards:"
+echo "   • Visa:        4532015112830366"
+echo "   • Mastercard:  5425233430109903"
+echo "   • Amex:        378282246310005"
+echo "   • Discover:    6011111111111117"
+echo
+echo "🚀 Quick Actions:"
+echo "   • Run './test-flow.sh' to see tokenization in action"
+echo "   • Run 'docker-compose logs -f [service]' to view logs"
+echo "   • Use CLI: './cli/tokenshield --help' for command-line interface"
