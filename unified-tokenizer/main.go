@@ -1,7 +1,6 @@
 package main
 
 import (
-    "bufio"
     "bytes"
     "crypto/aes"
     "crypto/cipher"
@@ -27,98 +26,14 @@ import (
     "github.com/fernet/fernet-go"
     _ "github.com/go-sql-driver/mysql"
     "golang.org/x/crypto/bcrypt"
+    
+    "tokenshield-unified/internal/utils"
+    "tokenshield-unified/internal/ratelimit"
+    "tokenshield-unified/internal/icap"
+    "tokenshield-unified/internal/tokenizer"
 )
 
-// Rate limiting structures
-type RateLimiter struct {
-    clients    map[string]*ClientRate
-    mutex      sync.RWMutex
-    maxAttempts int
-    windowSize  time.Duration
-    blockDuration time.Duration
-}
-
-type ClientRate struct {
-    attempts    []time.Time
-    blockedUntil time.Time
-}
-
-func NewRateLimiter(maxAttempts int, windowSize time.Duration, blockDuration time.Duration) *RateLimiter {
-    return &RateLimiter{
-        clients:      make(map[string]*ClientRate),
-        maxAttempts:  maxAttempts,
-        windowSize:   windowSize,
-        blockDuration: blockDuration,
-    }
-}
-
-func (rl *RateLimiter) IsAllowed(clientIP string) bool {
-    rl.mutex.Lock()
-    defer rl.mutex.Unlock()
-    
-    now := time.Now()
-    
-    // Get or create client rate data
-    client, exists := rl.clients[clientIP]
-    if !exists {
-        client = &ClientRate{
-            attempts: make([]time.Time, 0),
-        }
-        rl.clients[clientIP] = client
-    }
-    
-    // Check if client is currently blocked
-    if now.Before(client.blockedUntil) {
-        return false
-    }
-    
-    // Remove old attempts outside the window
-    cutoff := now.Add(-rl.windowSize)
-    validAttempts := make([]time.Time, 0)
-    for _, attempt := range client.attempts {
-        if attempt.After(cutoff) {
-            validAttempts = append(validAttempts, attempt)
-        }
-    }
-    client.attempts = validAttempts
-    
-    // Check if we're at the limit
-    if len(client.attempts) >= rl.maxAttempts {
-        // Block the client
-        client.blockedUntil = now.Add(rl.blockDuration)
-        return false
-    }
-    
-    // Add current attempt
-    client.attempts = append(client.attempts, now)
-    
-    return true
-}
-
-// Cleanup old entries periodically
-func (rl *RateLimiter) Cleanup() {
-    rl.mutex.Lock()
-    defer rl.mutex.Unlock()
-    
-    now := time.Now()
-    cutoff := now.Add(-rl.windowSize)
-    
-    for ip, client := range rl.clients {
-        // Remove expired attempts
-        validAttempts := make([]time.Time, 0)
-        for _, attempt := range client.attempts {
-            if attempt.After(cutoff) {
-                validAttempts = append(validAttempts, attempt)
-            }
-        }
-        client.attempts = validAttempts
-        
-        // Remove clients with no recent activity and not blocked
-        if len(client.attempts) == 0 && now.After(client.blockedUntil) {
-            delete(rl.clients, ip)
-        }
-    }
-}
+// Rate limiting moved to internal/ratelimit package
 
 // Input validation and sanitization functions
 var (
@@ -148,7 +63,7 @@ var (
 )
 
 // sanitizeString removes dangerous characters and escapes HTML
-func sanitizeString(input string) string {
+func SanitizeString(input string) string {
     // Remove null bytes and control characters
     cleaned := strings.Map(func(r rune) rune {
         if r == 0 || (r < 32 && r != 9 && r != 10 && r != 13) {
@@ -169,7 +84,7 @@ func sanitizeString(input string) string {
 }
 
 // detectSQLInjection checks for SQL injection patterns
-func detectSQLInjection(input string) bool {
+func DetectSQLInjection(input string) bool {
     lowercaseInput := strings.ToLower(input)
     for _, pattern := range sqlInjectionPatterns {
         if pattern.MatchString(lowercaseInput) {
@@ -240,7 +155,7 @@ func validateField(fieldName string, value interface{}, rule ValidationRule) []V
     }
     
     // SQL injection detection
-    if detectSQLInjection(strValue) {
+    if utils.DetectSQLInjection(strValue) {
         errors = append(errors, ValidationError{
             Field:   fieldName,
             Message: "field contains potentially dangerous content",
@@ -275,7 +190,7 @@ func (ut *UnifiedTokenizer) validateRequest(endpoint string, data map[string]int
         // No specific validation config, apply basic sanitization
         for key, value := range data {
             if strValue, ok := value.(string); ok {
-                result.Data[key] = sanitizeString(strValue)
+                result.Data[key] = utils.SanitizeString(strValue)
             } else {
                 result.Data[key] = value
             }
@@ -296,7 +211,7 @@ func (ut *UnifiedTokenizer) validateRequest(endpoint string, data map[string]int
         // Sanitize if required and validation passed
         if rule.Sanitize && exists && len(fieldErrors) == 0 {
             if strValue, ok := value.(string); ok {
-                result.Data[fieldName] = sanitizeString(strValue)
+                result.Data[fieldName] = utils.SanitizeString(strValue)
             } else {
                 result.Data[fieldName] = value
             }
@@ -420,7 +335,9 @@ type UnifiedTokenizer struct {
     debug           bool
     tokenFormat     string // "prefix" for tok_ format, "luhn" for Luhn-valid format
     useKEKDEK       bool   // Whether to use KEK/DEK encryption
-    authRateLimiter *RateLimiter // Rate limiter for authentication endpoints
+    authRateLimiter *ratelimit.RateLimiter // Rate limiter for authentication endpoints
+    icapServer      *icap.Server           // ICAP protocol server
+    tokenizer       *tokenizer.Tokenizer   // Core tokenization engine
     // Session security configuration
     sessionTimeout       time.Duration // Absolute session timeout
     sessionIdleTimeout   time.Duration // Idle session timeout 
@@ -696,11 +613,11 @@ func (ut *UnifiedTokenizer) initializeValidationConfigs() {
 
 func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     // Database connection
-    dbHost := getEnv("DB_HOST", "mysql")
-    dbPort := getEnv("DB_PORT", "3306")
-    dbUser := getEnv("DB_USER", "pciproxy")
-    dbPassword := getEnv("DB_PASSWORD", "pciproxy123")
-    dbName := getEnv("DB_NAME", "tokenshield")
+    dbHost := utils.GetEnv("DB_HOST", "mysql")
+    dbPort := utils.GetEnv("DB_PORT", "3306")
+    dbUser := utils.GetEnv("DB_USER", "pciproxy")
+    dbPassword := utils.GetEnv("DB_PASSWORD", "pciproxy123")
+    dbName := utils.GetEnv("DB_NAME", "tokenshield")
     
     dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", dbUser, dbPassword, dbHost, dbPort, dbName)
     db, err := sql.Open("mysql", dsn)
@@ -719,7 +636,7 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     db.SetConnMaxLifetime(5 * time.Minute)
     
     // Encryption key
-    encKeyStr := getEnv("ENCRYPTION_KEY", "")
+    encKeyStr := utils.GetEnv("ENCRYPTION_KEY", "")
     if encKeyStr == "" {
         // Generate a key for development
         key := fernet.Key{} 
@@ -740,7 +657,7 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     encKey := new(fernet.Key)
     copy(encKey[:], keyBytes)
     
-    tokenFormat := getEnv("TOKEN_FORMAT", "prefix")
+    tokenFormat := utils.GetEnv("TOKEN_FORMAT", "prefix")
     if tokenFormat != "prefix" && tokenFormat != "luhn" {
         tokenFormat = "prefix"
     }
@@ -755,25 +672,25 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
     }
     
     // Check if KEK/DEK is enabled
-    useKEKDEK := getEnv("USE_KEK_DEK", "false") == "true"
+    useKEKDEK := utils.GetEnv("USE_KEK_DEK", "false") == "true"
     
     ut := &UnifiedTokenizer{
         db:            db,
         encryptionKey: encKey,
-        appEndpoint:   getEnv("APP_ENDPOINT", "http://dummy-app:8000"),
+        appEndpoint:   utils.GetEnv("APP_ENDPOINT", "http://dummy-app:8000"),
         tokenRegex:    tokenRegex,
         cardRegex:     regexp.MustCompile(`\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|6(?:011|5[0-9]{2})[0-9]{12}|(?:2131|1800|35\d{3})\d{11})\b`),
-        httpPort:      getEnv("HTTP_PORT", "8080"),
-        icapPort:      getEnv("ICAP_PORT", "1344"),
-        apiPort:       getEnv("API_PORT", "8090"),
-        debug:         getEnv("DEBUG_MODE", "0") == "1",
+        httpPort:      utils.GetEnv("HTTP_PORT", "8080"),
+        icapPort:      utils.GetEnv("ICAP_PORT", "1344"),
+        apiPort:       utils.GetEnv("API_PORT", "8090"),
+        debug:         utils.GetEnv("DEBUG_MODE", "0") == "1",
         tokenFormat:   tokenFormat,
         useKEKDEK:     useKEKDEK,
-        authRateLimiter: NewRateLimiter(5, 15*time.Minute, 15*time.Minute), // 5 attempts per 15 minutes, 15 minute block
+        authRateLimiter: ratelimit.NewRateLimiter(5, 15*time.Minute, 15*time.Minute), // 5 attempts per 15 minutes, 15 minute block
         // Session security configuration with environment variable support
-        sessionTimeout:       parseTimeEnv("SESSION_TIMEOUT", "24h"),           // Default 24 hours
-        sessionIdleTimeout:   parseTimeEnv("SESSION_IDLE_TIMEOUT", "4h"),       // Default 4 hours
-        maxConcurrentSessions: parseIntEnv("MAX_CONCURRENT_SESSIONS", 5),       // Default 5 sessions per user
+        sessionTimeout:       utils.ParseTimeEnv("SESSION_TIMEOUT", "24h"),           // Default 24 hours
+        sessionIdleTimeout:   utils.ParseTimeEnv("SESSION_IDLE_TIMEOUT", "4h"),       // Default 4 hours
+        maxConcurrentSessions: utils.ParseIntEnv("MAX_CONCURRENT_SESSIONS", 5),       // Default 5 sessions per user
         validationConfigs:    make(map[string]ValidationConfig),                // Initialize validation configs
     }
     
@@ -790,6 +707,19 @@ func NewUnifiedTokenizer() (*UnifiedTokenizer, error) {
             ut.keyManager = km
         }
     }
+    
+    // Initialize ICAP server
+    ut.icapServer = icap.NewServer(ut, ut.debug)
+    
+    // Initialize tokenizer
+    tokenizerConfig := tokenizer.TokenizerConfig{
+        TokenFormat: tokenFormat,
+        UseKEKDEK:   useKEKDEK,
+        DebugMode:   ut.debug,
+        TokenRegex:  tokenRegex,
+        CardRegex:   ut.cardRegex,
+    }
+    ut.tokenizer = tokenizer.NewTokenizer(tokenizerConfig, encKey, ut.keyManager, ut)
     
     // Start rate limiter cleanup goroutine
     go func() {
@@ -810,8 +740,8 @@ func getEnv(key, defaultValue string) string {
     return defaultValue
 }
 
-func parseTimeEnv(key, defaultValue string) time.Duration {
-    value := getEnv(key, defaultValue)
+func ParseTimeEnv(key, defaultValue string) time.Duration {
+    value := utils.GetEnv(key, defaultValue)
     duration, err := time.ParseDuration(value)
     if err != nil {
         log.Printf("Warning: Invalid duration for %s: %s, using default: %s", key, value, defaultValue)
@@ -820,8 +750,8 @@ func parseTimeEnv(key, defaultValue string) time.Duration {
     return duration
 }
 
-func parseIntEnv(key string, defaultValue int) int {
-    value := getEnv(key, fmt.Sprintf("%d", defaultValue))
+func ParseIntEnv(key string, defaultValue int) int {
+    value := utils.GetEnv(key, fmt.Sprintf("%d", defaultValue))
     result, err := strconv.Atoi(value)
     if err != nil {
         log.Printf("Warning: Invalid integer for %s: %s, using default: %d", key, value, defaultValue)
@@ -830,7 +760,7 @@ func parseIntEnv(key string, defaultValue int) int {
     return result
 }
 
-func min(a, b int) int {
+func Min(a, b int) int {
     if a < b {
         return a
     }
@@ -861,7 +791,7 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
     contentType := r.Header.Get("Content-Type")
     
     if strings.Contains(contentType, "application/json") && len(body) > 0 {
-        tokenized, modified, err := ut.tokenizeJSON(string(body))
+        tokenized, modified, err := ut.tokenizer.TokenizeJSON(string(body))
         if err != nil {
             log.Printf("Error tokenizing JSON: %v", err)
             processedBody = body
@@ -936,12 +866,12 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
         respContentType := resp.Header.Get("Content-Type")
         if ut.debug {
             log.Printf("DEBUG: Response content type: %s", respContentType)
-            log.Printf("DEBUG: Response body preview: %s", string(respBody[:min(200, len(respBody))]))
+            log.Printf("DEBUG: Response body preview: %s", string(respBody[:utils.Min(200, len(respBody))]))
         }
         
         // Handle JSON responses (API)
         if strings.Contains(respContentType, "application/json") {
-            detokenized, modified, err := ut.detokenizeJSON(string(respBody))
+            detokenized, modified, err := ut.tokenizer.DetokenizeJSON(string(respBody))
             if err != nil {
                 log.Printf("Error detokenizing JSON response: %v", err)
             } else if modified {
@@ -952,7 +882,7 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
             }
         } else if strings.Contains(respContentType, "text/html") {
             // Handle HTML responses (web pages)
-            detokenized, modified, err := ut.detokenizeHTML(string(respBody))
+            detokenized, modified, err := ut.tokenizer.DetokenizeHTML(string(respBody))
             if err != nil {
                 log.Printf("Error detokenizing HTML response: %v", err)
             } else if modified {
@@ -986,495 +916,153 @@ func (ut *UnifiedTokenizer) handleTokenize(w http.ResponseWriter, r *http.Reques
     log.Printf("Request %s %s completed in %v with status %d", r.Method, path, duration, resp.StatusCode)
 }
 
-// ICAP Detokenization Server
-func (ut *UnifiedTokenizer) handleICAP(conn net.Conn) {
-    defer conn.Close()
+
+
+
+
+
+
+
+
+
+
+
+
+// calculateLuhnCheckDigit calculates the Luhn check digit for a given number
+func calculateLuhnCheckDigit(number string) int {
+    sum := 0
+    alternate := false
     
-    reader := bufio.NewReader(conn)
-    writer := bufio.NewWriter(conn)
-    
-    // Read request line
-    requestLine, err := reader.ReadString('\n')
-    if err != nil {
-        if err != io.EOF {
-            log.Printf("Error reading request line: %v", err)
-        }
-        return
-    }
-    
-    requestLine = strings.TrimSpace(requestLine)
-    parts := strings.Split(requestLine, " ")
-    if len(parts) < 3 {
-        log.Printf("Invalid request line: %s", requestLine)
-        return
-    }
-    
-    method := parts[0]
-    icapURI := parts[1]
-    version := parts[2]
-    
-    if ut.debug {
-        log.Printf("ICAP Request: %s %s %s", method, icapURI, version)
-    }
-    
-    // Read headers
-    headers := make(map[string]string)
-    for {
-        line, err := reader.ReadString('\n')
-        if err != nil {
-            log.Printf("Error reading headers: %v", err)
-            return
-        }
-        line = strings.TrimSpace(line)
-        if line == "" {
-            break
+    // Process from right to left
+    for i := len(number) - 1; i >= 0; i-- {
+        digit := int(number[i] - '0')
+        
+        if alternate {
+            digit *= 2
+            if digit > 9 {
+                digit = (digit % 10) + 1
+            }
         }
         
-        colonIndex := strings.Index(line, ":")
-        if colonIndex > 0 {
-            key := strings.TrimSpace(line[:colonIndex])
-            value := strings.TrimSpace(line[colonIndex+1:])
-            headers[key] = value
-        }
+        sum += digit
+        alternate = !alternate
     }
     
-    switch method {
-    case "OPTIONS":
-        ut.handleICAPOptions(writer, icapURI)
-    case "REQMOD":
-        ut.handleICAPReqmod(reader, writer, headers)
-    case "RESPMOD":
-        ut.handleICAPRespmod(reader, writer, headers)
-    default:
-        log.Printf("Unsupported ICAP method: %s", method)
-    }
-    
-    writer.Flush()
+    return (10 - (sum % 10)) % 10
 }
 
-func (ut *UnifiedTokenizer) handleICAPOptions(writer *bufio.Writer, icapURI string) {
-    response := fmt.Sprintf("ICAP/1.0 200 OK\r\n")
-    
-    // Support both REQMOD and RESPMOD based on the URI
-    if strings.Contains(icapURI, "/respmod") {
-        response += "Methods: RESPMOD\r\n"
-    } else {
-        response += "Methods: REQMOD\r\n"
+
+// Detect card type based on card number
+func DetectCardType(cardNumber string) string {
+    if len(cardNumber) < 4 {
+        return "Unknown"
     }
-    response += "Service: TokenShield Unified 1.0\r\n"
-    response += "ISTag: \"TS-001\"\r\n"
-    response += "Max-Connections: 100\r\n"
-    response += "Options-TTL: 3600\r\n"
-    response += "Allow: 204\r\n"
-    response += "Preview: 0\r\n"
-    response += "Transfer-Complete: *\r\n"
-    response += "\r\n"
     
-    writer.WriteString(response)
-    writer.Flush()
+    // Remove any spaces or dashes
+    cardNumber = strings.ReplaceAll(strings.ReplaceAll(cardNumber, " ", ""), "-", "")
     
-    if ut.debug {
-        log.Printf("Sent OPTIONS response for %s", icapURI)
+    // Visa: starts with 4
+    if strings.HasPrefix(cardNumber, "4") && (len(cardNumber) == 13 || len(cardNumber) == 16 || len(cardNumber) == 19) {
+        return "Visa"
     }
+    
+    // Mastercard: starts with 5 (51-55) or 2 (2221-2720)
+    if len(cardNumber) >= 2 {
+        prefix2 := cardNumber[:2]
+        if (prefix2 >= "51" && prefix2 <= "55") || (prefix2 >= "22" && prefix2 <= "27") {
+            if len(cardNumber) == 16 {
+                return "Mastercard"
+            }
+        }
+    }
+    
+    // American Express: starts with 34 or 37
+    if len(cardNumber) >= 2 {
+        prefix2 := cardNumber[:2]
+        if (prefix2 == "34" || prefix2 == "37") && len(cardNumber) == 15 {
+            return "Amex"
+        }
+    }
+    
+    // Discover: starts with 6011, 622126-622925, 644-649, or 65
+    if len(cardNumber) >= 4 {
+        prefix4 := cardNumber[:4]
+        prefix2 := cardNumber[:2]
+        prefix3 := cardNumber[:3]
+        
+        if prefix4 == "6011" || prefix2 == "65" {
+            if len(cardNumber) == 16 {
+                return "Discover"
+            }
+        }
+        
+        if len(cardNumber) >= 6 {
+            prefix6 := cardNumber[:6]
+            if prefix6 >= "622126" && prefix6 <= "622925" {
+                return "Discover"
+            }
+        }
+        
+        if prefix3 >= "644" && prefix3 <= "649" {
+            if len(cardNumber) == 16 {
+                return "Discover"
+            }
+        }
+    }
+    
+    return "Unknown"
 }
 
-func (ut *UnifiedTokenizer) handleICAPReqmod(reader *bufio.Reader, writer *bufio.Writer, icapHeaders map[string]string) {
-    // Parse encapsulated header
-    encapHeader := icapHeaders["Encapsulated"]
-    if encapHeader == "" {
-        log.Printf("Missing Encapsulated header")
-        return
+// isValidLuhn validates a card number using the Luhn algorithm
+func IsValidLuhn(cardNumber string) bool {
+    // Remove spaces and dashes
+    cardNumber = strings.ReplaceAll(strings.ReplaceAll(cardNumber, " ", ""), "-", "")
+    
+    if len(cardNumber) == 0 {
+        return false
     }
     
-    // Read HTTP request
-    httpRequest, httpHeaders, body, err := ut.parseEncapsulated(reader, encapHeader)
-    if err != nil {
-        log.Printf("Error parsing encapsulated data: %v", err)
-        return
-    }
+    sum := 0
+    alternate := false
     
-    if ut.debug {
-        log.Printf("HTTP Request: %s", httpRequest)
-        log.Printf("Body length: %d", len(body))
-    }
-    
-    // Check if we need to modify
-    modified := false
-    modifiedBody := body
-    
-    if len(body) > 0 {
-        detokenized, wasModified, err := ut.detokenizeJSON(string(body))
-        if err == nil && wasModified {
-            modifiedBody = []byte(detokenized)
-            modified = true
-            log.Printf("Detokenized request body")
+    // Process from right to left
+    for i := len(cardNumber) - 1; i >= 0; i-- {
+        digit := int(cardNumber[i] - '0')
+        if digit < 0 || digit > 9 {
+            return false
         }
-    }
-    
-    if !modified {
-        // Send 204 No Content
-        response := "ICAP/1.0 204 No Content\r\n\r\n"
-        writer.WriteString(response)
-        writer.Flush()
-        return
-    }
-    
-    // Send modified response
-    response := "ICAP/1.0 200 OK\r\n"
-    
-    // Calculate positions
-    reqHdrLen := len(httpRequest) + 2 // +2 for \r\n
-    for _, hdr := range httpHeaders {
-        reqHdrLen += len(hdr) + 2
-    }
-    reqHdrLen += 2 // empty line
-    
-    response += fmt.Sprintf("Encapsulated: req-hdr=0, req-body=%d\r\n", reqHdrLen)
-    response += "\r\n"
-    
-    // Write HTTP request line
-    response += httpRequest + "\r\n"
-    
-    // Write HTTP headers (update Content-Length)
-    contentLengthUpdated := false
-    for _, hdr := range httpHeaders {
-        if strings.HasPrefix(strings.ToLower(hdr), "content-length:") {
-            response += fmt.Sprintf("Content-Length: %d\r\n", len(modifiedBody))
-            contentLengthUpdated = true
-        } else {
-            response += hdr + "\r\n"
+        
+        if alternate {
+            digit *= 2
+            if digit > 9 {
+                digit = digit%10 + digit/10
+            }
         }
+        
+        sum += digit
+        alternate = !alternate
     }
     
-    if !contentLengthUpdated {
-        response += fmt.Sprintf("Content-Length: %d\r\n", len(modifiedBody))
-    }
-    
-    response += "\r\n"
-    
-    // Write response
-    writer.WriteString(response)
-    
-    // Write body in chunks
-    ut.writeChunked(writer, modifiedBody)
-    writer.Flush()
+    return sum%10 == 0
 }
 
-func (ut *UnifiedTokenizer) handleICAPRespmod(reader *bufio.Reader, writer *bufio.Writer, icapHeaders map[string]string) {
-    // Parse encapsulated header for response modification
-    encapHeader := icapHeaders["Encapsulated"]
-    if encapHeader == "" {
-        log.Printf("Missing Encapsulated header in RESPMOD")
-        return
-    }
-    
-    if ut.debug {
-        log.Printf("RESPMOD: Processing response for tokenization")
-        log.Printf("Encapsulated: %s", encapHeader)
-    }
-    
-    // Parse the response (request + response)
-    httpRequest, httpHeaders, body, err := ut.parseEncapsulated(reader, encapHeader)
-    if err != nil {
-        log.Printf("RESPMOD Error parsing encapsulated response data: %v", err)
-        return
-    }
-    
-    if ut.debug {
-        log.Printf("Response HTTP Request: %s", httpRequest)
-        log.Printf("Response body length: %d", len(body))
-    }
-    
-    // Check if we need to tokenize the response
-    modified := false
-    modifiedBody := body
-    
-    // Handle null-body case - send 204 No Content
-    if len(body) == 0 {
-        if ut.debug {
-            log.Printf("RESPMOD: No body to process, sending 204 No Content")
-        }
-        response := "ICAP/1.0 204 No Content\r\n"
-        response += "ISTag: \"TS-001\"\r\n"
-        response += "\r\n"
-        writer.WriteString(response)
-        writer.Flush()
-        return
-    }
-    
-    // Look for JSON responses that might contain card data
-    if len(body) > 0 {
-        contentType := ""
-        for _, header := range httpHeaders {
-            if strings.HasPrefix(strings.ToLower(header), "content-type:") {
-                contentType = strings.ToLower(header)
-                break
-            }
-        }
-        
-        if strings.Contains(contentType, "application/json") {
-            if ut.debug {
-                log.Printf("RESPMOD: Found JSON response, checking for cards to tokenize")
-            }
-            
-            tokenizedJSON, wasModified, err := ut.tokenizeJSON(string(body))
-            if err != nil {
-                log.Printf("Error tokenizing JSON response: %v", err)
-            } else if wasModified {
-                modifiedBody = []byte(tokenizedJSON)
-                modified = true
-                log.Printf("RESPMOD: Tokenized card numbers in response")
-            }
-        }
-    }
-    
-    // Send response
-    if !modified {
-        // No modification - send 204 No Content
-        response := "ICAP/1.0 204 No Content\r\n"
-        response += "ISTag: \"TS-001\"\r\n"
-        response += "\r\n"
-        writer.WriteString(response)
-    } else {
-        // Modified - send 200 OK with new body
-        
-        // Build HTTP response first to calculate exact positions
-        // Include HTTP status line + headers
-        httpHeadersStr := httpRequest + "\r\n" // HTTP status line
-        for _, header := range httpHeaders {
-            if strings.HasPrefix(strings.ToLower(header), "content-length:") {
-                // Update content length for modified body
-                httpHeadersStr += fmt.Sprintf("Content-Length: %d\r\n", len(modifiedBody))
-            } else {
-                httpHeadersStr += header + "\r\n"
-            }
-        }
-        httpHeadersStr += "\r\n" // End of headers
-        
-        // Calculate exact byte positions for Encapsulated header
-        resBodyOffset := len(httpHeadersStr)
-        
-        // Build ICAP response
-        response := "ICAP/1.0 200 OK\r\n"
-        response += "ISTag: \"TS-001\"\r\n"
-        response += fmt.Sprintf("Encapsulated: res-hdr=0, res-body=%d\r\n", resBodyOffset)
-        response += "\r\n"
-        
-        // Write ICAP headers
-        writer.WriteString(response)
-        
-        // Write HTTP response headers
-        writer.WriteString(httpHeadersStr)
-        
-        // Write modified body in chunks
-        ut.writeChunked(writer, modifiedBody)
-    }
-    
-    writer.Flush()
+
+
+// StorageInterface implementation for tokenizer package
+func (ut *UnifiedTokenizer) StoreCard(token, cardNumber string) error {
+    return ut.storeCard(token, cardNumber)
 }
 
-func (ut *UnifiedTokenizer) parseEncapsulated(reader *bufio.Reader, encapHeader string) (string, []string, []byte, error) {
-    log.Printf("DEBUG_FORCE: parseEncapsulated called with header: %s", encapHeader)
-    
-    // Parse positions from Encapsulated header
-    positions := make(map[string]int)
-    parts := strings.Split(encapHeader, ",")
-    for _, part := range parts {
-        kv := strings.Split(strings.TrimSpace(part), "=")
-        if len(kv) == 2 {
-            pos, _ := strconv.Atoi(kv[1])
-            positions[kv[0]] = pos
-        }
-    }
-    
-    if ut.debug {
-        log.Printf("DEBUG: parseEncapsulated positions: %+v", positions)
-    }
-    
-    // For RESPMOD: req-hdr=0, res-hdr=175, res-body=322
-    // This means: request headers start at 0, response headers at 175, response body at 322
-    
-    var requestLine string
-    var httpHeaders []string
-    var body []byte
-    var err error
-    
-    // Determine if this is REQMOD or RESPMOD
-    isRespmod := false
-    if _, hasResHdr := positions["res-hdr"]; hasResHdr {
-        isRespmod = true
-    }
-    
-    if isRespmod {
-        // RESPMOD: Skip request headers section if present, then read response headers
-        if _, hasReqHdr := positions["req-hdr"]; hasReqHdr {
-            if ut.debug {
-                log.Printf("DEBUG: Skipping request headers section for RESPMOD")
-            }
-            // Read and discard request headers
-            for {
-                line, err := reader.ReadString('\n')
-                if err != nil {
-                    return "", nil, nil, err
-                }
-                if strings.TrimSpace(line) == "" {
-                    break // End of request headers
-                }
-            }
-        }
-        
-        // Read response status line and headers  
-        if ut.debug {
-            log.Printf("DEBUG: Reading response headers section for RESPMOD")
-        }
-        requestLine, err = reader.ReadString('\n')
-        if err != nil {
-            return "", nil, nil, err
-        }
-        requestLine = strings.TrimSpace(requestLine)
-        
-        // Read HTTP response headers
-        for {
-            line, err := reader.ReadString('\n')
-            if err != nil {
-                return "", nil, nil, err
-            }
-            line = strings.TrimSpace(line)
-            if line == "" {
-                break // End of headers
-            }
-            httpHeaders = append(httpHeaders, line)
-        }
-    } else {
-        // REQMOD: Read request line and headers
-        if ut.debug {
-            log.Printf("DEBUG: Reading request headers section for REQMOD")
-        }
-        requestLine, err = reader.ReadString('\n')
-        if err != nil {
-            return "", nil, nil, err
-        }
-        requestLine = strings.TrimSpace(requestLine)
-        
-        // Read HTTP request headers
-        for {
-            line, err := reader.ReadString('\n')
-            if err != nil {
-                return "", nil, nil, err
-            }
-            line = strings.TrimSpace(line)
-            if line == "" {
-                break
-            }
-            httpHeaders = append(httpHeaders, line)
-        }
-    }
-    
-    // Read body if present
-    if _, hasReqBody := positions["req-body"]; hasReqBody {
-        if ut.debug {
-            log.Printf("DEBUG: Reading req-body")
-        }
-        body, err = ut.readChunked(reader)
-        if err != nil {
-            return "", nil, nil, err
-        }
-    } else if _, hasResBody := positions["res-body"]; hasResBody {
-        if ut.debug {
-            log.Printf("DEBUG: Reading res-body at position %d", positions["res-body"])
-        }
-        body, err = ut.readChunked(reader)
-        if err != nil {
-            if ut.debug {
-                log.Printf("DEBUG: Error reading res-body: %v", err)
-            }
-            return "", nil, nil, err
-        }
-        if ut.debug {
-            log.Printf("DEBUG: Successfully read res-body: %d bytes", len(body))
-        }
-    } else {
-        if ut.debug {
-            log.Printf("DEBUG: No body found in positions: %+v", positions)
-        }
-        // For null-body cases, we still need to return a proper response
-        // This typically means there's no body to process
-    }
-    
-    if ut.debug {
-        log.Printf("DEBUG: parseEncapsulated result - requestLine: '%s', headers: %d, body: %d bytes", 
-            requestLine, len(httpHeaders), len(body))
-    }
-    
-    return requestLine, httpHeaders, body, nil
+func (ut *UnifiedTokenizer) RetrieveCard(token string) string {
+    return ut.retrieveCard(token)
 }
 
-func (ut *UnifiedTokenizer) readChunked(reader *bufio.Reader) ([]byte, error) {
-    var result []byte
-    
-    if ut.debug {
-        log.Printf("DEBUG: readChunked starting")
-    }
-    
-    for {
-        // Read chunk size
-        sizeLine, err := reader.ReadString('\n')
-        if err != nil {
-            if ut.debug {
-                log.Printf("DEBUG: readChunked error reading size line: %v", err)
-            }
-            return nil, err
-        }
-        
-        sizeLine = strings.TrimSpace(sizeLine)
-        if ut.debug {
-            log.Printf("DEBUG: readChunked size line: '%s'", sizeLine)
-        }
-        
-        size, err := strconv.ParseInt(sizeLine, 16, 64)
-        if err != nil {
-            if ut.debug {
-                log.Printf("DEBUG: readChunked error parsing size: %v", err)
-            }
-            return nil, err
-        }
-        
-        if ut.debug {
-            log.Printf("DEBUG: readChunked chunk size: %d", size)
-        }
-        
-        if size == 0 {
-            // Read final CRLF
-            reader.ReadString('\n')
-            break
-        }
-        
-        // Read chunk data
-        chunk := make([]byte, size)
-        _, err = io.ReadFull(reader, chunk)
-        if err != nil {
-            return nil, err
-        }
-        
-        result = append(result, chunk...)
-        
-        // Read trailing CRLF
-        reader.ReadString('\n')
-    }
-    
-    return result, nil
+// ICAP Handler interface implementation - delegate to tokenizer package
+func (ut *UnifiedTokenizer) TokenizeJSON(jsonStr string) (string, bool, error) {
+    return ut.tokenizeJSON(jsonStr)
 }
 
-func (ut *UnifiedTokenizer) writeChunked(writer *bufio.Writer, data []byte) {
-    if len(data) > 0 {
-        writer.WriteString(fmt.Sprintf("%x\r\n", len(data)))
-        writer.Write(data)
-        writer.WriteString("\r\n")
-    }
-    writer.WriteString("0\r\n\r\n")
-}
-
-// Tokenization logic
+// Original working tokenizeJSON implementation
 func (ut *UnifiedTokenizer) tokenizeJSON(jsonStr string) (string, bool, error) {
     var data interface{}
     if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
@@ -1492,7 +1080,11 @@ func (ut *UnifiedTokenizer) tokenizeJSON(jsonStr string) (string, bool, error) {
     return string(result), modified, nil
 }
 
-// Detokenization logic
+func (ut *UnifiedTokenizer) DetokenizeJSON(jsonStr string) (string, bool, error) {
+    return ut.detokenizeJSON(jsonStr)
+}
+
+// Original working detokenizeJSON implementation
 func (ut *UnifiedTokenizer) detokenizeJSON(jsonStr string) (string, bool, error) {
     if ut.debug {
         log.Printf("DEBUG: detokenizeJSON called with: %s", jsonStr[:min(200, len(jsonStr))])
@@ -1522,37 +1114,7 @@ func (ut *UnifiedTokenizer) detokenizeJSON(jsonStr string) (string, bool, error)
     return string(result), modified, nil
 }
 
-// Detokenize HTML content
-func (ut *UnifiedTokenizer) detokenizeHTML(htmlStr string) (string, bool, error) {
-    if ut.debug {
-        log.Printf("DEBUG: detokenizeHTML called, length: %d", len(htmlStr))
-    }
-    
-    modified := false
-    result := htmlStr
-    
-    // Find all tokens in the HTML content
-    matches := ut.tokenRegex.FindAllString(htmlStr, -1)
-    if ut.debug {
-        log.Printf("DEBUG: Found %d potential tokens in HTML", len(matches))
-    }
-    
-    for _, token := range matches {
-        if ut.debug {
-            log.Printf("DEBUG: Attempting to detokenize token: %s", token)
-        }
-        if card := ut.retrieveCard(token); card != "" {
-            result = strings.ReplaceAll(result, token, card)
-            modified = true
-            log.Printf("Detokenized token %s in HTML content", token)
-        } else if ut.debug {
-            log.Printf("DEBUG: Failed to retrieve card for token: %s", token)
-        }
-    }
-    
-    return result, modified, nil
-}
-
+// Original working processValue implementation
 func (ut *UnifiedTokenizer) processValue(v interface{}, modified *bool, tokenize bool) {
     switch val := v.(type) {
     case *interface{}:
@@ -1634,6 +1196,7 @@ func (ut *UnifiedTokenizer) getMapKeys(m map[string]interface{}) []string {
     return keys
 }
 
+// Original helper methods
 func (ut *UnifiedTokenizer) isCreditCardField(fieldName string) bool {
     lowerField := strings.ToLower(fieldName)
     // Exact matches to avoid false positives like "cards" matching "card"
@@ -1665,8 +1228,29 @@ func (ut *UnifiedTokenizer) generateToken() string {
     return "tok_" + base64.URLEncoding.EncodeToString(b)
 }
 
+// generateLuhnToken generates a token that looks like a valid credit card number
+func (ut *UnifiedTokenizer) generateLuhnToken() string {
+    // Use prefix 9999 to distinguish tokens from real cards
+    // This prefix is not used by any real card issuer
+    prefix := "9999"
+    
+    // Generate 11 random digits
+    randomPart := make([]byte, 11)
+    for i := 0; i < 11; i++ {
+        randomPart[i] = byte(rand.Intn(10)) + '0'
+    }
+    
+    // Combine prefix and random part (15 digits total)
+    partial := prefix + string(randomPart)
+    
+    // Calculate and append Luhn check digit
+    checkDigit := ut.calculateLuhnCheckDigit(partial)
+    
+    return partial + strconv.Itoa(checkDigit)
+}
+
 // calculateLuhnCheckDigit calculates the Luhn check digit for a given number
-func calculateLuhnCheckDigit(number string) int {
+func (ut *UnifiedTokenizer) calculateLuhnCheckDigit(number string) int {
     sum := 0
     alternate := false
     
@@ -1688,150 +1272,8 @@ func calculateLuhnCheckDigit(number string) int {
     return (10 - (sum % 10)) % 10
 }
 
-// generateLuhnToken generates a token that looks like a valid credit card number
-func (ut *UnifiedTokenizer) generateLuhnToken() string {
-    // Use prefix 9999 to distinguish tokens from real cards
-    // This prefix is not used by any real card issuer
-    prefix := "9999"
-    
-    // Generate 11 random digits
-    randomPart := make([]byte, 11)
-    for i := 0; i < 11; i++ {
-        randomPart[i] = byte(rand.Intn(10)) + '0'
-    }
-    
-    // Combine prefix and random part (15 digits total)
-    partial := prefix + string(randomPart)
-    
-    // Calculate and append Luhn check digit
-    checkDigit := calculateLuhnCheckDigit(partial)
-    
-    return partial + strconv.Itoa(checkDigit)
-}
-
-// Detect card type based on card number
-func detectCardType(cardNumber string) string {
-    if len(cardNumber) < 4 {
-        return "Unknown"
-    }
-    
-    // Remove any spaces or dashes
-    cardNumber = strings.ReplaceAll(strings.ReplaceAll(cardNumber, " ", ""), "-", "")
-    
-    // Visa: starts with 4
-    if strings.HasPrefix(cardNumber, "4") && (len(cardNumber) == 13 || len(cardNumber) == 16 || len(cardNumber) == 19) {
-        return "Visa"
-    }
-    
-    // Mastercard: starts with 5 (51-55) or 2 (2221-2720)
-    if len(cardNumber) >= 2 {
-        prefix2 := cardNumber[:2]
-        if (prefix2 >= "51" && prefix2 <= "55") || (prefix2 >= "22" && prefix2 <= "27") {
-            if len(cardNumber) == 16 {
-                return "Mastercard"
-            }
-        }
-    }
-    
-    // American Express: starts with 34 or 37
-    if len(cardNumber) >= 2 {
-        prefix2 := cardNumber[:2]
-        if (prefix2 == "34" || prefix2 == "37") && len(cardNumber) == 15 {
-            return "Amex"
-        }
-    }
-    
-    // Discover: starts with 6011, 622126-622925, 644-649, or 65
-    if len(cardNumber) >= 4 {
-        prefix4 := cardNumber[:4]
-        prefix2 := cardNumber[:2]
-        prefix3 := cardNumber[:3]
-        
-        if prefix4 == "6011" || prefix2 == "65" {
-            if len(cardNumber) == 16 {
-                return "Discover"
-            }
-        }
-        
-        if len(cardNumber) >= 6 {
-            prefix6 := cardNumber[:6]
-            if prefix6 >= "622126" && prefix6 <= "622925" {
-                return "Discover"
-            }
-        }
-        
-        if prefix3 >= "644" && prefix3 <= "649" {
-            if len(cardNumber) == 16 {
-                return "Discover"
-            }
-        }
-    }
-    
-    return "Unknown"
-}
-
-// isValidLuhn validates a card number using the Luhn algorithm
-func isValidLuhn(cardNumber string) bool {
-    // Remove spaces and dashes
-    cardNumber = strings.ReplaceAll(strings.ReplaceAll(cardNumber, " ", ""), "-", "")
-    
-    if len(cardNumber) == 0 {
-        return false
-    }
-    
-    sum := 0
-    alternate := false
-    
-    // Process from right to left
-    for i := len(cardNumber) - 1; i >= 0; i-- {
-        digit := int(cardNumber[i] - '0')
-        if digit < 0 || digit > 9 {
-            return false
-        }
-        
-        if alternate {
-            digit *= 2
-            if digit > 9 {
-                digit = digit%10 + digit/10
-            }
-        }
-        
-        sum += digit
-        alternate = !alternate
-    }
-    
-    return sum%10 == 0
-}
-
-// encryptCardNumber encrypts card data using the appropriate method
-func (ut *UnifiedTokenizer) encryptCardNumber(data string) ([]byte, error) {
-    if ut.useKEKDEK && ut.keyManager != nil {
-        // Use KEK/DEK encryption
-        encrypted, _, err := ut.keyManager.EncryptData([]byte(data))
-        return encrypted, err
-    } else {
-        // Use legacy Fernet encryption
-        return fernet.EncryptAndSign([]byte(data), ut.encryptionKey)
-    }
-}
-
-// decryptCardNumber decrypts card data using the appropriate method
-func (ut *UnifiedTokenizer) decryptCardNumber(encryptedData []byte) (string, error) {
-    if ut.useKEKDEK && ut.keyManager != nil {
-        // Try KEK/DEK decryption first
-        decrypted, err := ut.keyManager.DecryptData(encryptedData, "")
-        if err == nil {
-            return string(decrypted), nil
-        }
-        // Fall back to legacy if KEK/DEK fails
-    }
-    
-    // Use legacy Fernet decryption
-    decrypted := fernet.VerifyAndDecrypt(encryptedData, 0, []*fernet.Key{ut.encryptionKey})
-    if decrypted == nil {
-        return "", fmt.Errorf("fernet decryption failed")
-    }
-    return string(decrypted), nil
+func (ut *UnifiedTokenizer) DetokenizeHTML(htmlStr string) (string, bool, error) {
+    return ut.tokenizer.DetokenizeHTML(htmlStr)
 }
 
 func (ut *UnifiedTokenizer) storeCard(token, cardNumber string) error {
@@ -1840,7 +1282,7 @@ func (ut *UnifiedTokenizer) storeCard(token, cardNumber string) error {
     var err error
     
     // Detect card type
-    cardType := detectCardType(cardNumber)
+    cardType := utils.DetectCardType(cardNumber)
     
     if ut.useKEKDEK && ut.keyManager != nil {
         // Use KEK/DEK encryption
@@ -2463,7 +1905,7 @@ func (ut *UnifiedTokenizer) corsMiddleware(next http.Handler) http.Handler {
 func (ut *UnifiedTokenizer) rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         // Skip rate limiting in test mode
-        if testMode := getEnv("TEST_MODE", "false"); testMode == "true" {
+        if testMode := utils.GetEnv("TEST_MODE", "false"); testMode == "true" {
             next(w, r)
             return
         }
@@ -3636,7 +3078,7 @@ func (ut *UnifiedTokenizer) validateCardRecord(card CardImportRecord) error {
     }
     
     // Validate using Luhn algorithm
-    if !isValidLuhn(cleanCard) {
+    if !utils.IsValidLuhn(cleanCard) {
         return fmt.Errorf("card number fails Luhn algorithm validation")
     }
     
@@ -3699,7 +3141,7 @@ func (ut *UnifiedTokenizer) checkCardExists(cardNumber string) (bool, string, er
         }
         
         // Decrypt and compare
-        decryptedCard, err := ut.decryptCardNumber(encryptedCard)
+        decryptedCard, err := ut.tokenizer.DecryptCardNumber(encryptedCard)
         if err != nil {
             continue
         }
@@ -3718,13 +3160,13 @@ func (ut *UnifiedTokenizer) tokenizeCardForImport(card CardImportRecord, tx *sql
     cleanCard := strings.ReplaceAll(strings.ReplaceAll(card.CardNumber, " ", ""), "-", "")
     
     // Generate token
-    token := ut.generateToken()
+    token := ut.tokenizer.GenerateToken()
     
     // Detect card type
-    cardType := detectCardType(cleanCard)
+    cardType := utils.DetectCardType(cleanCard)
     
     // Encrypt card number
-    encryptedCard, err := ut.encryptCardNumber(cleanCard)
+    encryptedCard, err := ut.tokenizer.EncryptCardNumber(cleanCard)
     if err != nil {
         return "", "", fmt.Errorf("failed to encrypt card: %v", err)
     }
@@ -3732,7 +3174,7 @@ func (ut *UnifiedTokenizer) tokenizeCardForImport(card CardImportRecord, tx *sql
     // Encrypt card holder name if provided
     var encryptedHolder []byte
     if card.CardHolder != "" {
-        encryptedHolder, err = ut.encryptCardNumber(card.CardHolder)
+        encryptedHolder, err = ut.tokenizer.EncryptCardNumber(card.CardHolder)
         if err != nil {
             return "", "", fmt.Errorf("failed to encrypt card holder: %v", err)
         }
@@ -4289,7 +3731,7 @@ func (ut *UnifiedTokenizer) startICAPServer() {
             continue
         }
         
-        go ut.handleICAP(conn)
+        go ut.icapServer.HandleConnection(conn)
     }
 }
 
