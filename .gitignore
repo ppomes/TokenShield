@@ -50,3 +50,6 @@ build/
 # CLI binaries
 cli/tokenshield
 cli/tokenshield-*
+
+# tests
+test_results.json
